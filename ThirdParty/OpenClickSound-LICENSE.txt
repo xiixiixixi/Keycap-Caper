@@ -1,0 +1,16 @@
+OUTEMU Green mechanical switch recordings (the four outemu-green WAV files)
+Copyright Nigh, OpenClickSound, used under CC BY-NC 4.0.
+Source https://github.com/Nigh/OpenClickSound/tree/940927c4cf22529c386d52ceac88052344d72075/Sound/01
+Author https://github.com/Nigh
+License https://creativecommons.org/licenses/by-nc/4.0/
+
+Original files in order: kt01-click-02-01.wav, kt01-click-02-02.wav,
+kt01-click-03-01.wav, kt01-click-03-02.wav. Trimmed leading/trailing
+quiet to respond promptly to a keystroke. Original sampling rate, bit depth
+and level retained. Personal/noncommercial use only.
+
+Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
+
+This work is licensed under the Creative Commons Attribution-NonCommercial 4.0 International License. 
+To view a copy of this license, visit http://creativecommons.org/licenses/by-nc/4.0/ 
+or send a letter to Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
