@@ -4,7 +4,7 @@ import CoreGraphics
 import IOKit.hidsystem
 
 final class KeyboardInput {
-    var onKey: ((String, Int?, Bool) -> Void)?
+    var onKey: ((String, Int?, Bool, Int) -> Void)?
     var onCombo: ((ComboTrick) -> Void)?
 
     private var tap: CFMachPort?
@@ -83,7 +83,7 @@ final class KeyboardInput {
             // Modifier flags describe this event even if a quick release is already queued.
             guard let modifier = Self.modifiers[keyCode],
                   event.flags.rawValue & UInt64(modifier.mask) != 0 else { return }
-            onKey?(modifier.label, nil, Self.rightHandKeys.contains(keyCode))
+            onKey?(modifier.label, nil, Self.rightHandKeys.contains(keyCode), keyCode)
             return
         }
 
@@ -94,7 +94,7 @@ final class KeyboardInput {
         let letterIndex = physicalKey?.utf8.first.flatMap { byte in
             (65...90).contains(byte) ? Int(byte) - 65 : nil
         }
-        onKey?(label, letterIndex, Self.rightHandKeys.contains(keyCode))
+        onKey?(label, letterIndex, Self.rightHandKeys.contains(keyCode), keyCode)
         if let trick = ComboTrick.match(label: label, physicalKey: physicalKey, flags: event.flags) {
             onCombo?(trick)
         }

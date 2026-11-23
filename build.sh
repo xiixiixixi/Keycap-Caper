@@ -33,7 +33,9 @@ for arch in arm64 x86_64; do
     target="$arch-apple-macosx13.0"
     xcrun swiftc "${flags[@]}" -target "$target" -module-name CaperUpdateInstaller \
         Tools/UpdateInstaller.swift -o "$staging_dir/helper-$arch"
-    xcrun swiftc "${flags[@]}" -target "$target" -module-name GreenEyedCat \
+    xcrun clang -target "$target" -O2 -DNDEBUG -c Sources/Vorbis.c -o "$staging_dir/vorbis-$arch.o"
+    xcrun swiftc "${flags[@]}" -target "$target" -import-objc-header Sources/Vorbis.h \
+        "$staging_dir/vorbis-$arch.o" -module-name GreenEyedCat \
         Sources/*.swift -o "$staging_dir/pet-$arch"
 done
 xcrun lipo -create "$staging_dir"/helper-{arm64,x86_64} -output "$app/Contents/Helpers/CaperUpdateInstaller"

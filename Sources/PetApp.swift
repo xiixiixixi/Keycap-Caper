@@ -31,6 +31,14 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
     private var status: NSStatusItem!
     private let trickBook = TrickBook()
     @MainActor private lazy var updater = AppUpdater()
+    @MainActor private lazy var soundLibrary = SoundLibrary(
+        available: { [unowned self] in self.sound.availableStyles },
+        refresh: { [unowned self] in
+            self.sound.refreshInstalledStyles()
+            self.rebuildSoundMenu()
+        },
+        audition: { [unowned self] style in self.chooseSound(style) }
+    )
     private lazy var permissionGuide = PermissionGuide { [weak self] in
         guard KeyboardInput.hasPermission else { return .needsPermission }
         guard let self else { return .waitingForListener }
@@ -52,8 +60,8 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
         setUpPanel()
         setUpMenu()
 
-        keyboard.onKey = { [weak self] label, index, rightPaw in
-            self?.showKey(label, index: index, rightPaw: rightPaw)
+        keyboard.onKey = { [weak self] label, index, rightPaw, keyCode in
+            self?.showKey(label, index: index, rightPaw: rightPaw, keyCode: keyCode)
         }
         keyboard.onCombo = { [weak self] trick in
             guard let self, self.panel.isVisible, self.view.showsCombos else { return }
@@ -169,14 +177,7 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
         menu.addItem(item("放回右下角", #selector(resetPosition)))
         menu.addItem(.separator())
         let switchItem = NSMenuItem(title: "轴体音效", action: nil, keyEquivalent: "")
-        for style in sound.availableStyles {
-            let choice = item(style.menuTitle, #selector(selectSwitch(_:)))
-            choice.representedObject = style.rawValue
-            switchMenu.addItem(choice)
-        }
-        updateSwitchCheckmark()
-        switchMenu.addItem(.separator())
-        switchMenu.addItem(item("试听当前轴体", #selector(previewSwitch)))
+        rebuildSoundMenu()
         switchItem.submenu = switchMenu
         menu.addItem(switchItem)
         soundItem = item("打字时播放音效", #selector(toggleSound))
@@ -221,15 +222,16 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
         }
     }
 
-    private func showKey(_ label: String, index: Int?, rightPaw: Bool) {
+    private func showKey(_ label: String, index: Int?, rightPaw: Bool, keyCode: Int? = nil) {
         guard panel.isVisible else { return }
         let now = ProcessInfo.processInfo.systemUptime
         view.press(label, keyIndex: index, rightPaw: rightPaw, at: now)
-        if !defaults.bool(forKey: Setting.muted) { sound.play(label, index: index) }
+        if !defaults.bool(forKey: Setting.muted) { sound.play(label, index: index, keyCode: keyCode) }
     }
 
     @objc private func openInputSettings() { permissionGuide.present() }
     @MainActor @objc private func checkUpdates() { updater.show() }
+    @MainActor @objc private func getSoundPacks() { soundLibrary.show() }
     @objc private func openTrickBook() { trickBook.present(character: view.character) }
     @objc private func toggleCombos() {
         view.showsCombos.toggle()
@@ -289,6 +291,29 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
         }
     }
 
+    private func rebuildSoundMenu() {
+        switchMenu.removeAllItems()
+        for style in sound.availableStyles {
+            let choice = item(style.menuTitle, #selector(selectSwitch(_:)))
+            choice.representedObject = style.rawValue
+            switchMenu.addItem(choice)
+        }
+        updateSwitchCheckmark()
+        let missing = SwitchStyle.allCases.filter { $0.usesPersonalRecordings && !sound.availableStyles.contains($0) }
+        if !missing.isEmpty {
+            switchMenu.addItem(.separator())
+            switchMenu.addItem(NSMenuItem(title: "从原站获取 · 仅供个人使用", action: nil, keyEquivalent: ""))
+            for style in missing {
+                let choice = item(style.menuTitle + "（获取）", #selector(getAndPlay(_:)))
+                choice.representedObject = style.rawValue
+                switchMenu.addItem(choice)
+            }
+        }
+        switchMenu.addItem(.separator())
+        switchMenu.addItem(item("获取原版音效…", #selector(getSoundPacks)))
+        switchMenu.addItem(item("试听当前轴体", #selector(previewSwitch)))
+    }
+
     private func updateSwitchCheckmark() {
         for choice in switchMenu.items {
             guard let id = choice.representedObject as? String else { continue }
@@ -298,10 +323,25 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
 
     @objc private func selectSwitch(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String, let style = SwitchStyle(rawValue: id) else { return }
-        sound.select(style)
+        chooseSound(style)
+    }
+
+    @MainActor @objc private func getAndPlay(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let style = SwitchStyle(rawValue: id) else { return }
+        soundLibrary.show()
+        soundLibrary.choose(style)
+    }
+
+    @discardableResult private func chooseSound(_ style: SwitchStyle) -> Bool {
+        guard sound.availableStyles.contains(style), sound.select(style) else {
+            rebuildSoundMenu()
+            return false
+        }
         defaults.set(style.rawValue, forKey: Setting.switchStyle)
         updateSwitchCheckmark()
         previewSwitch()
+        return true
     }
 
     @objc private func previewSwitch() {

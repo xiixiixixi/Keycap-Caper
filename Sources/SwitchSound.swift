@@ -40,6 +40,7 @@ enum SwitchStyle: String, CaseIterable {
 }
 
 private final class RecordedKeys {
+    private let original: OriginalKeyRecording?
     private let mapping: [String: String]
     private let directory: URL
     private var pools: [String: [AVAudioPlayer]] = [:]
@@ -47,6 +48,11 @@ private final class RecordedKeys {
     init?(style: SwitchStyle, support: URL) {
         directory = support.appendingPathComponent("org.keycapcaper.desktop/Sounds", isDirectory: true)
             .appendingPathComponent(style.rawValue, isDirectory: true)
+        original = OriginalKeyRecording(directory: OfficialPacks.directory(for: style))
+        if original != nil {
+            mapping = [:]
+            return
+        }
         guard let data = try? Data(contentsOf: directory.appendingPathComponent("mapping.plist")),
               let mapping = try? PropertyListDecoder().decode([String: String].self, from: data),
               ["A", "J", "空格"].allSatisfy({ mapping[$0] != nil }) else { return nil }
@@ -63,21 +69,40 @@ private final class RecordedKeys {
     }
 
     private func readyVoice(_ name: String) -> AVAudioPlayer? {
-        guard let player = try? AVAudioPlayer(contentsOf: sampleURL(name)), player.prepareToPlay() else { return nil }
+        let voice: AVAudioPlayer?
+        if let original {
+            guard let data = original.clips[name] else { return nil }
+            voice = try? AVAudioPlayer(data: data, fileTypeHint: AVFileType.wav.rawValue)
+        } else {
+            voice = try? AVAudioPlayer(contentsOf: sampleURL(name))
+        }
+        guard let player = voice, player.prepareToPlay() else { return nil }
         return player
     }
 
-    func warmUp() {
+    func warmUp() -> Bool {
+        if let original, !original.prepare() { return false }
         for label in ["A", "J", "空格"] {
-            if let name = mapping[label], pools[name] == nil, let player = readyVoice(name) {
+            guard let name = sampleName(label, index: nil, keyCode: nil) else { return false }
+            if pools[name] == nil {
+                guard let player = readyVoice(name) else { return false }
                 pools[name] = [player]
             }
         }
+        return true
     }
 
-    func play(_ label: String, index: Int?) {
-        let physicalLetter = index.flatMap { (0..<26).contains($0) ? String(UnicodeScalar(65 + $0)!) : nil }
-        guard let name = physicalLetter.flatMap({ mapping[$0] }) ?? mapping[label] ?? mapping[label.uppercased()] ?? mapping["A"] else { return }
+    private func sampleName(_ label: String, index: Int?, keyCode: Int?) -> String? {
+        if let original {
+            let key = original.key(for: label, index: index, code: keyCode)
+            return original.clips[key] != nil ? key : "KeyA"
+        }
+        let letter = index.flatMap { (0..<26).contains($0) ? String(UnicodeScalar(65 + $0)!) : nil }
+        return letter.flatMap { mapping[$0] } ?? mapping[label] ?? mapping[label.uppercased()] ?? mapping["A"]
+    }
+
+    func play(_ label: String, index: Int?, keyCode: Int?) {
+        guard let name = sampleName(label, index: index, keyCode: keyCode) else { return }
         var voices = pools[name] ?? []
         let voice: AVAudioPlayer
         if let index = voices.firstIndex(where: { !$0.isPlaying }) {
@@ -101,11 +126,13 @@ private final class RecordedKeys {
         }
         pools.removeAll()
     }
+
+    func unloadSamples() { original?.unload() }
 }
 
 final class KeySound {
     private(set) var style: SwitchStyle
-    private let recordings: [SwitchStyle: RecordedKeys]
+    private var recordings: [SwitchStyle: RecordedKeys] = [:]
     private var voices: [AVAudioPlayer] = []
     private var nextVoice = 0
     var availableStyles: [SwitchStyle] {
@@ -113,29 +140,42 @@ final class KeySound {
     }
 
     init(style: SwitchStyle) {
-        var catalog: [SwitchStyle: RecordedKeys] = [:]
-        if let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            for item in SwitchStyle.allCases where item.usesPersonalRecordings {
-                catalog[item] = RecordedKeys(style: item, support: support)
-            }
+        self.style = .red
+        refreshInstalledStyles()
+        if availableStyles.contains(style) { self.style = style }
+        if !loadVoices() {
+            self.style = .red
+            _ = loadVoices()
         }
-        recordings = catalog
-        self.style = style.usesPersonalRecordings && catalog[style] == nil ? .red : style
-        loadVoices()
     }
 
-    func select(_ newStyle: SwitchStyle) {
-        guard availableStyles.contains(newStyle), style != newStyle else { return }
+    func refreshInstalledStyles() {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        for style in SwitchStyle.allCases where style.usesPersonalRecordings && recordings[style] == nil {
+            recordings[style] = RecordedKeys(style: style, support: support)
+        }
+    }
+
+    @discardableResult
+    func select(_ newStyle: SwitchStyle) -> Bool {
+        guard availableStyles.contains(newStyle) else { return false }
+        if style == newStyle { return true }
+        // Validate and preload the newly acquired recording before switching away.
+        if let pack = recordings[newStyle], !pack.warmUp() {
+            pack.stop()
+            recordings.removeValue(forKey: newStyle)
+            return false
+        }
         stop()
+        recordings[style]?.unloadSamples()
         style = newStyle
-        loadVoices()
+        return loadVoices()
     }
 
-    private func loadVoices() {
+    private func loadVoices() -> Bool {
         if let pack = recordings[style] {
             voices.removeAll()
-            pack.warmUp()
-            return
+            return pack.warmUp()
         }
         // Two sets of four taps allow overlapping key presses with the bundled sounds.
         voices = (0..<8).compactMap { slot in
@@ -145,11 +185,12 @@ final class KeySound {
             return player
         }
         nextVoice = 0
+        return !voices.isEmpty
     }
 
-    func play(_ label: String = "A", index: Int? = nil) {
+    func play(_ label: String = "A", index: Int? = nil, keyCode: Int? = nil) {
         if let pack = recordings[style] {
-            pack.play(label, index: index)
+            pack.play(label, index: index, keyCode: keyCode)
             return
         }
         guard !voices.isEmpty else { return }
