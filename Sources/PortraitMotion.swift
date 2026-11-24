@@ -53,9 +53,9 @@ struct PortraitMotion {
     var atRest: Bool { head.isIdentity && chestX == 0 && chestY == 0 && expansion == 0 }
 }
 
-/// Only the neck and chest are skinned. Each texture strip has a filter gutter.
-/// Hard clipping on shared triangle edges avoids the dashed translucent seam
-/// produced by independently antialiasing two sides of a texture mesh.
+/// Only the neck and chest are skinned. Quartz's window compositor can
+/// antialias adjoining clips independently. Assemble the mesh at display
+/// resolution in one bitmap so the window composites the silhouette once.
 final class PortraitSkin {
     private struct Strip {
         let lower: CGFloat
@@ -67,6 +67,7 @@ final class PortraitSkin {
     private let original: CGImage
     private let frame: CGRect
     private let strips: [Strip]
+    private var surface: CGContext?
 
     init(image: CGImage, frame: CGRect, neck: CGFloat) {
         original = image
@@ -86,6 +87,37 @@ final class PortraitSkin {
 
     func draw(in c: CGContext, motion: PortraitMotion) {
         guard !motion.atRest else { c.draw(original, in: frame); return }
+        let bounds = CGRect(origin: .zero, size: CatArt.size)
+        // A window may record with an identity CTM and replay at Retina scale.
+        let xUnit = c.convertToDeviceSpace(CGSize(width: 1, height: 0))
+        let yUnit = c.convertToDeviceSpace(CGSize(width: 0, height: 1))
+        let density = max(hypot(xUnit.width, xUnit.height), hypot(yUnit.width, yUnit.height))
+        let scale = min(3, max(1, ceil(density)))
+        let width = Int(bounds.width * scale), height = Int(bounds.height * scale)
+        if surface?.width != width || surface?.height != height {
+            surface = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            surface?.setAllowsAntialiasing(false)
+            surface?.interpolationQuality = .high
+            surface?.scaleBy(x: scale, y: scale)
+        }
+        if let surface {
+            surface.clear(bounds)
+            drawStrips(in: surface, motion: motion)
+            if let body = surface.makeImage() {
+                c.draw(body, in: bounds)
+                return
+            }
+        }
+        // Preserve the face's registration even if the backing store is unavailable.
+        c.saveGState()
+        c.concatenate(motion.head)
+        c.draw(original, in: frame)
+        c.restoreGState()
+    }
+
+    private func drawStrips(in c: CGContext, motion: PortraitMotion) {
         for strip in strips {
             if strip.lower >= motion.neck || strip.upper <= PortraitMotion.base {
                 c.saveGState()
