@@ -6,6 +6,8 @@ import IOKit.hidsystem
 final class KeyboardInput {
     var onKey: ((String, Int?, Bool, Int) -> Void)?
     var onCombo: ((ComboTrick) -> Void)?
+    var onRhythmInput: ((Bool) -> Void)?
+    var onScroll: ((CGFloat) -> Void)?
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
@@ -29,9 +31,10 @@ final class KeyboardInput {
         stop()
         guard Self.hasPermission else { return false }
 
-        // A passive event tap lets the overlay observe keys without changing them.
+        // The overlay only observes. The foreground application receives the original event.
         let mask = (CGEventMask(1) << CGEventType.keyDown.rawValue)
             | (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
+            | (CGEventMask(1) << CGEventType.scrollWheel.rawValue)
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .tailAppendEventTap,
@@ -69,7 +72,16 @@ final class KeyboardInput {
     private func handle(_ type: CGEventType, event: CGEvent) {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            onRhythmInput?(false)
             if let tap, Self.hasPermission { CGEvent.tapEnable(tap: tap, enable: true) }
+            return
+        case .scrollWheel:
+            guard !Self.isSecureInput, let scroll = NSEvent(cgEvent: event),
+                  scroll.momentumPhase.isEmpty,
+                  abs(scroll.scrollingDeltaY) > abs(scroll.scrollingDeltaX) else { return }
+            // AppKit already accounts for natural scrolling. Negative Y reveals later content.
+            let points = -scroll.scrollingDeltaY * (scroll.hasPreciseScrollingDeltas ? 1 : 12)
+            if points.isFinite { onScroll?(points) }
             return
         case .keyDown, .flagsChanged:
             break
@@ -77,9 +89,13 @@ final class KeyboardInput {
             return
         }
 
-        guard !Self.isSecureInput else { return }
+        guard !Self.isSecureInput else {
+            onRhythmInput?(false)
+            return
+        }
         let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
         if type == .flagsChanged {
+            onRhythmInput?(false)
             // Modifier flags describe this event even if a quick release is already queued.
             guard let modifier = Self.modifiers[keyCode],
                   event.flags.rawValue & UInt64(modifier.mask) != 0 else { return }
@@ -87,9 +103,14 @@ final class KeyboardInput {
             return
         }
 
-        // BongoCat-mac only animates a new press when a key is held and repeats.
-        guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return }
+        guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else {
+            onRhythmInput?(false)
+            return
+        }
         let physicalKey = Self.printableKeys[keyCode]
+        let chordFlags: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift, .maskSecondaryFn]
+        let isTypingKey = physicalKey != nil || keyCode == kVK_Space
+        onRhythmInput?(isTypingKey && event.flags.intersection(chordFlags).isEmpty)
         let label = Self.specialKeys[keyCode] ?? Self.printableLabel(event) ?? physicalKey ?? "键"
         let letterIndex = physicalKey?.utf8.first.flatMap { byte in
             (65...90).contains(byte) ? Int(byte) - 65 : nil

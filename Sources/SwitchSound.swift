@@ -101,7 +101,7 @@ private final class RecordedKeys {
         return letter.flatMap { mapping[$0] } ?? mapping[label] ?? mapping[label.uppercased()] ?? mapping["A"]
     }
 
-    func play(_ label: String, index: Int?, keyCode: Int?) {
+    func play(_ label: String, index: Int?, keyCode: Int?, volume: Float) {
         guard let name = sampleName(label, index: index, keyCode: keyCode) else { return }
         var voices = pools[name] ?? []
         let voice: AVAudioPlayer
@@ -116,6 +116,7 @@ private final class RecordedKeys {
         }
         voices.append(voice)
         pools[name] = voices
+        voice.volume = volume
         voice.currentTime = 0
         voice.play()
     }
@@ -188,14 +189,15 @@ final class KeySound {
         return !voices.isEmpty
     }
 
-    func play(_ label: String = "A", index: Int? = nil, keyCode: Int? = nil) {
+    func play(_ label: String = "A", index: Int? = nil, keyCode: Int? = nil, volume: Float = 1) {
         if let pack = recordings[style] {
-            pack.play(label, index: index, keyCode: keyCode)
+            pack.play(label, index: index, keyCode: keyCode, volume: volume)
             return
         }
         guard !voices.isEmpty else { return }
         let voice = voices[nextVoice]
         nextVoice = (nextVoice + 1) % voices.count
+        voice.volume = volume
         voice.currentTime = 0
         voice.play()
     }

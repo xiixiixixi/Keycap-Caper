@@ -30,12 +30,20 @@ enum CatArt {
                        y: kittenRect.minY + 733 * scale).applying(pose(mouseReach))
     }
 
+    static func affectionTransform(_ reaction: PetAffectionPose) -> CGAffineTransform {
+        CGAffineTransform(translationX: 160, y: 65)
+            .rotated(by: reaction.tilt)
+            .scaledBy(x: 1, y: 1 + reaction.lift / 110)
+            .translatedBy(x: -160, y: -65)
+    }
+
     static func draw(
         in context: CGContext, gaze: CGVector, blink: CGFloat,
         leftPress: CGFloat, rightPress: CGFloat, keyIndex: Int?,
         leftKey: Int? = nil, rightKey: Int? = nil,
         mouseReach: CGFloat = 0, mouseOffset: CGVector = .zero, mousePress: CGFloat = 0,
-        character: PetCharacter = .cat
+        character: PetCharacter = .cat, scene: DeskScene.Frame? = nil,
+        affection: PetAffectionPose = .neutral
     ) {
         context.saveGState()
         defer { context.restoreGState() }
@@ -44,7 +52,9 @@ enum CatArt {
         context.interpolationQuality = .high
 
         let reach = min(1, max(0, mouseReach))
-        let body = pose(reach)
+        let body = pose(reach).concatenating(affectionTransform(affection))
+        let gaze = scene?.gaze ?? affection.gaze ?? gaze
+        let blink = max(blink, affection.blink)
         let portrait = CompanionPortrait.forCharacter(character)
         context.saveGState()
         context.concatenate(body)
@@ -56,15 +66,16 @@ enum CatArt {
         }
         context.restoreGState()
 
-        PetKeyboard.draw(in: context, activeKey: keyIndex)
+        PetKeyboard.draw(in: context, activeKey: keyIndex, hiddenKey: scene?.hiddenKey)
         let mouse = CGPoint(x: 83.5 + 0.35 * mouseOffset.dx, y: 55.5 + 0.50 * mouseOffset.dy)
         drawMouse(in: context, at: mouse, press: mousePress)
 
-        let left = keyContact(rest: CGPoint(x: 133, y: 51), key: leftKey, press: leftPress)
-        let right = keyContact(rest: CGPoint(x: 182, y: 51), key: rightKey, press: rightPress)
+        let left = keyContact(rest: affection.leftToe ?? CGPoint(x: 133, y: 51), key: leftKey, press: leftPress)
+        let right = scene?.rightToe ?? keyContact(rest: affection.rightToe ?? CGPoint(x: 182, y: 51), key: rightKey, press: rightPress)
         let mouseToe = CGPoint(x: mouse.x + 0.5, y: mouse.y - 1 - mousePress * 1.9)
-        let movingToe = CGPoint(x: left.x + (mouseToe.x - left.x) * reach,
+        let movingToe = scene?.leftToe ?? CGPoint(x: left.x + (mouseToe.x - left.x) * reach,
                                 y: left.y + (mouseToe.y - left.y) * reach + sin(.pi * reach) * 5)
+        scene?.draw(in: context)
         let rightShoulder = CGPoint(x: 185, y: 80).applying(body)
         let leftShoulder = CGPoint(x: 127, y: 80).applying(body)
         if let portrait {

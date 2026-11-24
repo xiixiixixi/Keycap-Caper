@@ -175,7 +175,7 @@ enum PetKeyboard {
         return c.makeImage()
     }()
 
-    static func draw(in c: CGContext, activeKey: Int?) {
+    static func draw(in c: CGContext, activeKey: Int?, hiddenKey: Int? = nil) {
         c.saveGState()
         defer { c.restoreGState() }
         if let image = restingImage {
@@ -184,6 +184,23 @@ enum PetKeyboard {
         } else {
             drawResting(in: c)
         }
-        if let key = activeKey, let cap = byCode[key] { drawCap(cap, in: c, pressed: true) }
+        if let hiddenKey, let cap = byCode[hiddenKey] {
+            let r = cap.frame
+            pill(c, r.insetBy(dx: -0.15, dy: -0.15), radius: 0.7, color: caseDark)
+            let stem = CGRect(x: r.midX - 1.3, y: r.midY - 0.8, width: 2.6, height: 1.6)
+            pill(c, stem, radius: 0.4, color: capEdge)
+        }
+        if let key = activeKey, key != hiddenKey, let cap = byCode[key] { drawCap(cap, in: c, pressed: true) }
+    }
+
+    static func drawLooseCap(_ code: Int, center: CGPoint, scale: CGFloat, rotation: CGFloat, in c: CGContext) {
+        guard let cap = byCode[code] else { return }
+        c.saveGState()
+        c.translateBy(x: center.x, y: center.y)
+        c.rotate(by: rotation)
+        c.scaleBy(x: scale, y: scale)
+        c.translateBy(x: -cap.frame.midX, y: -cap.frame.midY)
+        drawCap(cap, in: c, pressed: false)
+        c.restoreGState()
     }
 }

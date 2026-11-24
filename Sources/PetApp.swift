@@ -54,6 +54,7 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
     private var bubblesItem: NSMenuItem!
     private var timer: Timer?
     private var nextPermissionCheck: TimeInterval = 0
+    private var wasSecure = false
     private var demoTimers: [Timer] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -63,6 +64,18 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
 
         keyboard.onKey = { [weak self] label, index, rightPaw, keyCode in
             self?.showKey(label, index: index, rightPaw: rightPaw, keyCode: keyCode)
+        }
+        keyboard.onRhythmInput = { [weak self] eligible in
+            guard let self, self.panel.isVisible else { return }
+            self.view.recordBeat(eligible: eligible, at: ProcessInfo.processInfo.systemUptime)
+        }
+        keyboard.onScroll = { [weak self] down in
+            guard let self, self.panel.isVisible else { return }
+            self.view.scroll(down: down, at: ProcessInfo.processInfo.systemUptime)
+        }
+        view.onEchoTap = { [weak self] label, code, gain in
+            guard let self, !self.defaults.bool(forKey: Setting.muted) else { return }
+            self.sound.play(label, keyCode: code, volume: gain)
         }
         keyboard.onCombo = { [weak self] trick in
             guard let self, self.panel.isVisible, self.view.showsCombos else { return }
@@ -169,6 +182,15 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
         }
         characterItem.submenu = characterMenu
         menu.addItem(characterItem)
+        let plays = NSMenu(title: "互动玩法")
+        for play in PetPlay.allCases {
+            let choice = item(play.title, #selector(tryPlay(_:)))
+            choice.representedObject = play.rawValue
+            plays.addItem(choice)
+        }
+        let playItem = NSMenuItem(title: plays.title, action: nil, keyEquivalent: "")
+        playItem.submenu = plays
+        menu.addItem(playItem)
         menu.addItem(item("组合技图鉴…", #selector(openTrickBook)))
         menu.addItem(item("试听并看看动作", #selector(playDemo)))
         visibilityItem = item("隐藏搭档", #selector(toggleVisibility))
@@ -208,8 +230,10 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
             checkPermission()
         }
         if panel.isVisible {
-            if KeyboardInput.isSecureInput { view.clearKeyFeedback() }
-            view.update(at: now)
+            let secure = KeyboardInput.isSecureInput
+            if secure && !wasSecure { view.clearKeyFeedback() }
+            wasSecure = secure
+            view.update(at: now, allowPlay: !secure)
         }
     }
 
@@ -226,8 +250,19 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
     private func showKey(_ label: String, index: Int?, rightPaw: Bool, keyCode: Int? = nil) {
         guard panel.isVisible else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        view.press(label, keyCode: keyCode, rightHand: rightPaw, at: now)
+        view.press(label, keyCode: keyCode, rightHand: rightPaw, at: now,
+                   physical: keyCode != nil, mahjong: sound.style == .mahjong)
         if !defaults.bool(forKey: Setting.muted) { sound.play(label, index: index, keyCode: keyCode) }
+    }
+
+    @objc private func tryPlay(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String, let play = PetPlay(rawValue: name),
+              !KeyboardInput.isSecureInput else { return }
+        cancelDemo()
+        if view.moving { setMoving(false) }
+        panel.orderFrontRegardless()
+        checkPermission()
+        view.preview(play, at: ProcessInfo.processInfo.systemUptime)
     }
 
     @objc private func openInputSettings() { permissionGuide.present() }

@@ -1,5 +1,20 @@
 import AppKit
 
+enum PetPlay: String, CaseIterable {
+    case theft, echo, fishing, petting, bubble, mahjong
+
+    var title: String {
+        switch self {
+        case .theft: return "小浣熊偷键帽"
+        case .echo: return "学我的节奏"
+        case .fishing: return "水獭滚轮钓鱼"
+        case .petting: return "摸摸搭档的头"
+        case .bubble: return "接住按键气泡"
+        case .mahjong: return "麻将轴自摸"
+        }
+    }
+}
+
 final class PetView: NSView {
     private struct Bubble {
         let label: String
@@ -9,6 +24,15 @@ final class PetView: NSView {
 
     private var bubbles: [Bubble] = []
     private var nextLane = 0
+    private let deskScene = DeskScene()
+    private let affection = PetAffection()
+    private var echo = RhythmEcho()
+    private var previewActor: PetCharacter?
+    private var actor: PetCharacter { previewActor ?? character }
+    var onEchoTap: ((String, Int, Float) -> Void)?
+    private var lastTick: TimeInterval?
+    private var slipLookUntil: TimeInterval = 0
+    private var slipGaze = CGVector.zero
     private var lastLeftPress = -TimeInterval.infinity
     private var lastRightPress = -TimeInterval.infinity
     private var lastKeyPress = -TimeInterval.infinity
@@ -29,13 +53,17 @@ final class PetView: NSView {
 
     var character: PetCharacter = .cat {
         didSet {
+            resetPlay()
             setAccessibilityLabel("桌宠搭档，\(character.menuTitle)")
             needsDisplay = true
         }
     }
 
     var moving = false {
-        didSet { needsDisplay = true }
+        didSet {
+            if moving { resetPlay() }
+            needsDisplay = true
+        }
     }
 
     var showsBubbles = true {
@@ -52,13 +80,32 @@ final class PetView: NSView {
 
     func showCombo(_ trick: ComboTrick, at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard showsCombos else { return }
+        resetPlay()
         clearBubbles()
         combo = (trick, now, NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         needsDisplay = true
     }
 
-    func press(_ label: String, keyCode: Int?, rightHand: Bool, at now: TimeInterval) {
-        let keyIndex = keyCode ?? PetKeyboard.code(forDemoLabel: label)
+    func press(_ label: String, keyCode: Int?, rightHand: Bool, at now: TimeInterval,
+               physical: Bool = false, mahjong: Bool = false) {
+        let code = keyCode ?? PetKeyboard.code(forDemoLabel: label)
+        if physical {
+            slipLookUntil = 0
+            previewActor = nil
+            let canDeal = mahjong && !moving && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            deskScene.keyDown(isReturn: code == 36 || code == 76, mahjong: canDeal, at: now)
+        }
+        tapPaw(keyIndex: code, rightHand: rightHand, at: now)
+        if showsBubbles {
+            bubbles.removeAll { $0.lane == nextLane }
+            let taken = physical && !moving && combo == nil && deskScene.frame(at: now) == nil &&
+                affection.offerBubble(label: label, lane: nextLane, character: actor, at: now)
+            if !taken { bubbles.append(Bubble(label: label, lane: nextLane, born: now)) }
+            nextLane = (nextLane + 1) % 4
+        }
+    }
+
+    private func tapPaw(keyIndex: Int?, rightHand: Bool, at now: TimeInterval) {
         if PetKeyboard.usesScreenRightPaw(for: keyIndex, rightHand: rightHand) {
             lastRightPress = now
             rightKey = keyIndex
@@ -68,22 +115,17 @@ final class PetView: NSView {
         }
         lastKeyPress = now
         self.keyIndex = keyIndex
-        if showsBubbles {
-            bubbles.removeAll { $0.lane == nextLane }
-            bubbles.append(Bubble(label: label, lane: nextLane, born: now))
-            nextLane = (nextLane + 1) % 4
-        }
         needsDisplay = true
     }
 
     func clearBubbles() {
-        guard !bubbles.isEmpty else { return }
+        affection.clearBubble()
         bubbles.removeAll(keepingCapacity: true)
         needsDisplay = true
     }
 
     func clearKeyFeedback() {
-        guard lastKeyPress.isFinite || !bubbles.isEmpty || combo != nil else { return }
+        resetPlay()
         combo = nil
         clearBubbles()
         keyIndex = nil
@@ -95,7 +137,84 @@ final class PetView: NSView {
         needsDisplay = true
     }
 
-    func update(at now: TimeInterval) {
+    private func resetPlay() {
+        deskScene.reset()
+        affection.reset()
+        echo.cancel()
+        previewActor = nil
+        lastTick = nil
+        slipLookUntil = 0
+        needsDisplay = true
+    }
+
+    func recordBeat(eligible: Bool, at now: TimeInterval) {
+        guard !moving else { return }
+        echo.record(eligible: eligible, at: now)
+    }
+
+    func scroll(down: CGFloat, at now: TimeInterval) {
+        guard !moving, combo == nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        deskScene.scroll(down: down, character: actor, at: now)
+        if deskScene.frame(at: now) != nil {
+            echo.cancel()
+            needsDisplay = true
+        }
+    }
+
+    func preview(_ play: PetPlay, at now: TimeInterval) {
+        clearKeyFeedback()
+        switch play {
+        case .theft:
+            previewActor = .raccoon
+            deskScene.preview(.theft, at: now)
+        case .fishing:
+            previewActor = .otter
+            deskScene.preview(.fishing, at: now)
+        case .mahjong: deskScene.preview(.mahjong, at: now)
+        case .echo: echo.startDemo(at: now)
+        case .petting: affection.previewTouch(character: actor, at: now)
+        case .bubble:
+            // A preview is explicitly requested, even when ordinary key labels are hidden.
+            _ = affection.offerBubble(label: actor == .cat ? "空格" : "B", lane: nextLane,
+                                      character: actor, at: now, force: true)
+        }
+        needsDisplay = true
+    }
+
+    private func updatePlay(cursor: CGPoint, eyes: CGPoint, at now: TimeInterval) {
+        guard !moving, combo == nil else { return }
+        if let lastTick, now - lastTick > 2 { resetPlay() }
+        lastTick = now
+        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let wasPerforming = deskScene.frame(at: now) != nil || previewActor != nil
+        let inReach = hypot(cursor.x - eyes.x, cursor.y - eyes.y) < 95
+        deskScene.update(character: actor, cursorNear: inReach,
+                         canStartIdle: !reduced && !affection.isActive && !echo.isPlaying, at: now)
+        if deskScene.frame(at: now) != nil {
+            echo.cancel()
+            if affection.isActive { affection.reset() }
+            needsDisplay = true
+            return
+        }
+        if wasPerforming {
+            previewActor = nil
+            needsDisplay = true
+        }
+        if affection.update(cursor: cursor, eyeCenter: eyes, character: actor, at: now, reducedMotion: reduced) {
+            needsDisplay = true
+        }
+        if affection.isPetting { echo.cancel() }
+        if let beat = echo.nextTap(at: now) {
+            if beat.isSlip {
+                slipGaze = CGVector(dx: PetKeyboard.usesScreenRightPaw(for: beat.keyCode, rightHand: beat.rightHand) ? 0.55 : -0.55, dy: -1)
+                slipLookUntil = now + 0.38
+            }
+            tapPaw(keyIndex: beat.keyCode, rightHand: beat.rightHand, at: now)
+            onEchoTap?(beat.label, beat.keyCode, beat.gain)
+        }
+    }
+
+    func update(at now: TimeInterval, allowPlay: Bool = true) {
         guard let window, window.isVisible else { return }
 
         let cursor = NSEvent.mouseLocation
@@ -104,7 +223,11 @@ final class PetView: NSView {
             if now - effect.born >= ComboArt.duration { combo = nil }
             needsDisplay = true
         }
-        let eyes = CatArt.eyeCenter(mouseReach: mouseReach, character: character)
+        let eyes = CatArt.eyeCenter(mouseReach: mouseReach, character: actor)
+        if allowPlay {
+            let local = convert(window.convertPoint(fromScreen: cursor), from: nil)
+            updatePlay(cursor: local, eyes: eyes, at: now)
+        }
         let eyeCenter = window.convertPoint(toScreen: convert(eyes, to: nil))
         let dx = cursor.x - eyeCenter.x
         let dy = cursor.y - eyeCenter.y
@@ -186,7 +309,7 @@ final class PetView: NSView {
         let now = ProcessInfo.processInfo.systemUptime
         CatArt.draw(
             in: context,
-            gaze: gaze,
+            gaze: now < slipLookUntil ? slipGaze : gaze,
             blink: blink,
             leftPress: pawAmount(now - lastLeftPress),
             rightPress: pawAmount(now - lastRightPress),
@@ -196,11 +319,12 @@ final class PetView: NSView {
             mouseReach: mouseReach,
             mouseOffset: mouseOffset,
             mousePress: mousePress,
-            character: character
+            character: actor, scene: deskScene.frame(at: now), affection: affection.pose(at: now)
         )
         for bubble in bubbles {
-            draw(bubble, age: now - bubble.born, in: context)
+            PetBubbleArt.draw(label: bubble.label, lane: bubble.lane, age: now - bubble.born, in: context)
         }
+        affection.drawBubble(in: context, at: now)
         if let effect = combo {
             ComboArt.draw(effect.trick, age: now - effect.born, reducedMotion: effect.reducedMotion, in: context)
         }
@@ -226,35 +350,4 @@ final class PetView: NSView {
         return CGFloat(min(age / 0.025, 1, (0.22 - age) / 0.14))
     }
 
-    private func draw(_ bubble: Bubble, age: TimeInterval, in context: CGContext) {
-        let progress = CGFloat(min(1, max(0, age / 0.82)))
-        let rise = 1 - pow(1 - progress, 2)
-        let alpha = min(1, 16 * progress, (1 - progress) * 3.6)
-        guard alpha > 0 else { return }
-
-        let font = NSFont.monospacedSystemFont(ofSize: bubble.label.count > 2 ? 10 : 13, weight: .semibold)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor(srgbRed: 0.12, green: 0.20, blue: 0.18, alpha: alpha)
-        ]
-        let label = NSAttributedString(string: bubble.label, attributes: attributes)
-        let labelSize = label.size()
-        let width = max(22, labelSize.width + 10)
-        let xPositions: [CGFloat] = [203, 229, 252, 218]
-        let yPositions: [CGFloat] = [72, 84, 74, 102]
-        let x = min(xPositions[bubble.lane] - width / 2, bounds.maxX - width - 4)
-        let rect = NSRect(x: x, y: yPositions[bubble.lane] + 16 * rise, width: width, height: 21)
-        let shape = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-
-        context.saveGState()
-        context.setShadow(offset: CGSize(width: 0, height: -2), blur: 5, color: NSColor.black.withAlphaComponent(alpha * 0.28).cgColor)
-        NSColor(srgbRed: 0.95, green: 1, blue: 0.87, alpha: alpha).setFill()
-        shape.fill()
-        context.restoreGState()
-
-        NSColor(srgbRed: 0.43, green: 0.62, blue: 0.38, alpha: alpha).setStroke()
-        shape.lineWidth = 1
-        shape.stroke()
-        label.draw(at: NSPoint(x: rect.midX - labelSize.width / 2, y: rect.midY - labelSize.height / 2))
-    }
 }
