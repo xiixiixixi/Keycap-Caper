@@ -14,27 +14,25 @@ enum CatArt {
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }()
 
-    // The head, chest, ears and tail move together. A small lean keeps the mouse within reach.
-    private static func pose(_ reach: CGFloat) -> CGAffineTransform {
-        CGAffineTransform(translationX: 160 - 14 * reach, y: 42 - 1.2 * reach)
-            .rotated(by: 0.047 * reach)
-            .translatedBy(x: -160, y: -42)
-    }
+    private static let kittenSkin = kitten.map { PortraitSkin(image: $0, frame: kittenRect, neck: PortraitMotion.neck(for: .cat)) }
 
     static func eyeCenter(mouseReach: CGFloat, character: PetCharacter = .cat) -> CGPoint {
-        if let portrait = CompanionPortrait.forCharacter(character) {
-            return portrait.eyeCenter.applying(pose(mouseReach))
-        }
-        let scale = kittenRect.width / spriteSize
-        return CGPoint(x: kittenRect.minX + (eyes[0] + eyes[1]) * 0.5 * scale,
-                       y: kittenRect.minY + 733 * scale).applying(pose(mouseReach))
+        let eye = restEyeCenter(character)
+        return eye.applying(PortraitMotion(neck: PortraitMotion.neck(for: character), reach: mouseReach).head)
     }
 
-    static func affectionTransform(_ reaction: PetAffectionPose) -> CGAffineTransform {
-        CGAffineTransform(translationX: 160, y: 65)
-            .rotated(by: reaction.tilt)
-            .scaledBy(x: 1, y: 1 + reaction.lift / 110)
-            .translatedBy(x: -160, y: -65)
+    private static func restEyeCenter(_ character: PetCharacter) -> CGPoint {
+        if let portrait = CompanionPortrait.forCharacter(character) { return portrait.eyeCenter }
+        let scale = kittenRect.width / spriteSize
+        return CGPoint(x: kittenRect.minX + (eyes[0] + eyes[1]) * 0.5 * scale, y: kittenRect.minY + 733 * scale)
+    }
+
+    static func faceSpot(offsetFromEyes: CGVector, character: PetCharacter, reach: CGFloat, reaction: PetAffectionPose) -> CGPoint {
+        var p = restEyeCenter(character)
+        p.x += offsetFromEyes.dx
+        p.y += offsetFromEyes.dy
+        let rig = PortraitMotion(neck: PortraitMotion.neck(for: character), reach: reach, affection: reaction)
+        return rig.map(p)
     }
 
     static func draw(
@@ -43,7 +41,9 @@ enum CatArt {
         leftKey: Int? = nil, rightKey: Int? = nil,
         mouseReach: CGFloat = 0, mouseOffset: CGVector = .zero, mousePress: CGFloat = 0,
         character: PetCharacter = .cat, scene: DeskScene.Frame? = nil,
-        affection: PetAffectionPose = .neutral
+        affection: PetAffectionPose = .neutral, life: CGFloat = 0, typingWeight: CGFloat = 0,
+        leftOrigin: CGPoint? = nil, rightOrigin: CGPoint? = nil,
+        underPaws: ((CGContext) -> Void)? = nil
     ) {
         context.saveGState()
         defer { context.restoreGState() }
@@ -52,46 +52,76 @@ enum CatArt {
         context.interpolationQuality = .high
 
         let reach = min(1, max(0, mouseReach))
-        let body = pose(reach).concatenating(affectionTransform(affection))
+        let rig = PortraitMotion(neck: PortraitMotion.neck(for: character), reach: reach, scene: scene,
+                                 affection: affection, life: life, weight: typingWeight)
         let gaze = scene?.gaze ?? affection.gaze ?? gaze
         let blink = max(blink, affection.blink)
         let portrait = CompanionPortrait.forCharacter(character)
-        context.saveGState()
-        context.concatenate(body)
         if let portrait {
-            portrait.drawBody(in: context, gaze: gaze, blink: blink)
-        } else if let kitten {
-            context.draw(kitten, in: kittenRect)
+            portrait.drawBody(in: context, gaze: gaze, blink: blink, motion: rig)
+        } else if let kittenSkin {
+            kittenSkin.draw(in: context, motion: rig)
+            context.saveGState()
+            context.concatenate(rig.head)
             drawEyes(in: context, gaze: gaze, blink: blink)
+            context.restoreGState()
         }
-        context.restoreGState()
 
-        PetKeyboard.draw(in: context, activeKey: keyIndex, hiddenKey: scene?.hiddenKey)
+        let pressure = keyIndex == leftKey ? leftPress : rightPress
+        PetKeyboard.draw(in: context, activeKey: keyIndex, hiddenKey: scene?.hiddenKey, pressure: pressure)
         let mouse = CGPoint(x: 83.5 + 0.35 * mouseOffset.dx, y: 55.5 + 0.50 * mouseOffset.dy)
         drawMouse(in: context, at: mouse, press: mousePress)
 
-        let left = keyContact(rest: affection.leftToe ?? CGPoint(x: 133, y: 51), key: leftKey, press: leftPress)
-        let right = scene?.rightToe ?? keyContact(rest: affection.rightToe ?? CGPoint(x: 182, y: 51), key: rightKey, press: rightPress)
+        let left = keyContact(rest: affection.leftToe ?? CGPoint(x: 133, y: 51), key: leftKey, press: leftPress, origin: leftOrigin)
+        let right = scene?.rightToe ?? keyContact(rest: affection.rightToe ?? CGPoint(x: 182, y: 51), key: rightKey, press: rightPress, origin: rightOrigin)
         let mouseToe = CGPoint(x: mouse.x + 0.5, y: mouse.y - 1 - mousePress * 1.9)
         let movingToe = scene?.leftToe ?? CGPoint(x: left.x + (mouseToe.x - left.x) * reach,
                                 y: left.y + (mouseToe.y - left.y) * reach + sin(.pi * reach) * 5)
+        for tip in [right, movingToe] where tip.y < 63 {
+            let contact = max(0, min(1, (64 - tip.y) / 18))
+            context.setFillColor(CGColor(gray: 0.08, alpha: 0.045 + contact * 0.06))
+            context.fillEllipse(in: CGRect(x: tip.x - 7.2, y: tip.y - 2.5, width: 14.4, height: 3.8))
+        }
         scene?.draw(in: context)
-        let rightShoulder = CGPoint(x: 185, y: 80).applying(body)
-        let leftShoulder = CGPoint(x: 127, y: 80).applying(body)
+        underPaws?(context)
+        let rightShoulder = rig.map(CGPoint(x: 185, y: 84))
+        let leftShoulder = rig.map(CGPoint(x: 127, y: 84))
         if let portrait {
-            portrait.drawPaw(in: context, toe: right, shoulder: rightShoulder)
-            portrait.drawPaw(in: context, toe: movingToe, shoulder: leftShoulder)
+            portrait.drawPaw(in: context, toe: right, shoulder: rightShoulder, side: 1, hold: scene?.grip ?? 0)
+            portrait.drawPaw(in: context, toe: movingToe, shoulder: leftShoulder, side: -1, hold: 0)
         } else {
-            drawPaw(in: context, toe: right, shoulder: rightShoulder, mirror: false)
-            drawPaw(in: context, toe: movingToe, shoulder: leftShoulder, mirror: true)
+            kittenLimb?.draw(in: context, shoulder: rightShoulder, toe: right, side: 1, grip: 0, gripImage: nil, hoof: false)
+            kittenLimb?.draw(in: context, shoulder: leftShoulder, toe: movingToe, side: -1, grip: 0, gripImage: nil, hoof: false)
         }
     }
 
-    private static func keyContact(rest: CGPoint, key: Int?, press: CGFloat) -> CGPoint {
+    static func keyContact(rest: CGPoint, key: Int?, press: CGFloat, origin: CGPoint? = nil) -> CGPoint {
         let target = key.flatMap(PetKeyboard.center(for:)) ?? CGPoint(x: rest.x, y: rest.y - 10)
         let amount = min(1, max(0, press))
-        return CGPoint(x: rest.x + (target.x - rest.x) * amount,
-                       y: rest.y + (target.y - rest.y) * amount)
+        let start = origin ?? rest
+        return CGPoint(x: start.x + (target.x - start.x) * amount,
+                       y: start.y + (target.y - start.y) * amount)
+    }
+
+    // These two small forehead patches follow the fur direction on each side of the face.
+    private static let lidCoats = eyes.map { x in
+        kitten?.cropping(to: CGRect(x: x - 107, y: 318, width: 214, height: 80))
+    }
+
+    private static let relaxedLids = lidCoats.map { coat -> CGImage? in
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        guard let coat, let c = CGContext(data: nil, width: 322, height: 292, bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let feather = CGGradient(colorsSpace: space, colors: [CGColor(gray: 1, alpha: 1), CGColor(gray: 1, alpha: 1),
+                                                                     CGColor(gray: 1, alpha: 0)] as CFArray,
+                                       locations: [0, 0.79, 1]) else { return nil }
+        c.draw(coat, in: CGRect(x: 0, y: 0, width: 322, height: 292))
+        c.translateBy(x: 161, y: 146)
+        c.scaleBy(x: 161, y: 146)
+        c.setBlendMode(.destinationIn)
+        c.drawRadialGradient(feather, startCenter: .zero, startRadius: 0, endCenter: .zero, endRadius: 1,
+                             options: [.drawsAfterEndLocation])
+        return c.makeImage()
     }
 
     private static func drawEyes(in context: CGContext, gaze: CGVector, blink: CGFloat) {
@@ -103,7 +133,7 @@ enum CatArt {
         let yOffset = min(max(gaze.dy, -1), 1) * 27
         let blinkAmount = min(max(blink, 0), 1)
 
-        for x in eyes {
+        for (i, x) in eyes.enumerated() {
             let y: CGFloat = 733
             let eye = shape(x, y + 105, closed: true) {
                 $0.curve(x + 61, y + 105, x + 114, y + 57, x + 115, y - 2)
@@ -117,24 +147,47 @@ enum CatArt {
             drawPupil(in: context, x: x + xOffset, y: y + yOffset)
 
             if blinkAmount > 0.03 {
-                let lidY = y + 108 - 179 * blinkAmount
-                let lid = shape(x - 122, y + 113, closed: true) {
-                    $0.line(x + 122, y + 113)
-                    $0.line(x + 122, lidY + 18)
-                    $0.curve(x + 61, lidY - 12, x - 61, lidY - 12, x - 122, lidY + 18)
+                let closed = min(1, blinkAmount / 0.94)
+                let upperY = y + 128 - 154 * closed
+                let lowerY = y - 114 + 92 * closed
+                let lid = CGMutablePath()
+                lid.move(to: CGPoint(x: x - 125, y: upperY))
+                lid.addQuadCurve(to: CGPoint(x: x + 125, y: upperY), control: CGPoint(x: x, y: upperY - 22))
+                lid.addLine(to: CGPoint(x: x + 125, y: y + 125))
+                lid.addLine(to: CGPoint(x: x - 125, y: y + 125)); lid.closeSubpath()
+                lid.move(to: CGPoint(x: x - 125, y: lowerY))
+                lid.addQuadCurve(to: CGPoint(x: x + 125, y: lowerY), control: CGPoint(x: x, y: lowerY - 22))
+                lid.addLine(to: CGPoint(x: x + 125, y: y - 125))
+                lid.addLine(to: CGPoint(x: x - 125, y: y - 125)); lid.closeSubpath()
+                context.saveGState()
+                context.addPath(lid); context.clip()
+                context.setFillColor(color(0x342D2C))
+                context.fill(CGRect(x: x - 125, y: y - 125, width: 250, height: 250))
+                if let coat = lidCoats[i] {
+                    context.draw(coat, in: CGRect(x: x - 125, y: y - 115, width: 250, height: 230))
                 }
-                gradient(lid, top: color(0x4B403C), bottom: color(0x2D2424),
-                         minY: lidY, maxY: y + 109, in: context)
-                let lowerLid = shape(x - 122, y - 109, closed: true) {
-                    $0.line(x + 122, y - 109)
-                    $0.line(x + 122, y - 111 + 42 * blinkAmount)
-                    $0.curve(x + 55, y - 118 + 45 * blinkAmount,
-                             x - 55, y - 118 + 45 * blinkAmount,
-                             x - 122, y - 111 + 42 * blinkAmount)
-                }
-                fill(lowerLid, with: color(0x332827), in: context)
+                context.restoreGState()
+                let crease = CGMutablePath()
+                crease.move(to: CGPoint(x: x - 123, y: upperY + 1))
+                crease.addQuadCurve(to: CGPoint(x: x + 123, y: upperY + 1), control: CGPoint(x: x, y: upperY - 21))
+                stroke(crease, with: color(0x241C1C).copy(alpha: 0.86 * closed)!, width: 7, in: context)
             }
             context.restoreGState()
+            // At full closure the fur crosses the rim as well as the iris.
+            // The tapered crease ends before the edge of the relaxed lid.
+            if blinkAmount > 0.67, let coat = relaxedLids[i] {
+                let t = min(1, (blinkAmount - 0.67) / 0.27)
+                context.saveGState()
+                context.setAlpha(t * t * (3 - 2 * t))
+                context.draw(coat, in: CGRect(x: x - 161, y: y - 146, width: 322, height: 292))
+                let seam = CGMutablePath()
+                seam.move(to: CGPoint(x: x - 89, y: y - 15))
+                seam.addQuadCurve(to: CGPoint(x: x + 91, y: y - 13), control: CGPoint(x: x, y: y - 45))
+                seam.addQuadCurve(to: CGPoint(x: x - 89, y: y - 15), control: CGPoint(x: x, y: y - 57))
+                seam.closeSubpath()
+                fill(seam, with: color(0x201A19), in: context)
+                context.restoreGState()
+            }
         }
     }
 
@@ -195,22 +248,10 @@ enum CatArt {
         return c.makeImage()
     }()
 
-    private static let upperPaw = pawImage?.cropping(to: CGRect(x: 0, y: 0, width: 96, height: 72))
-
-    private static func drawPaw(in context: CGContext, toe: CGPoint, shoulder: CGPoint, mirror: Bool) {
-        guard let pawImage else { return }
-        context.saveGState()
-        defer { context.restoreGState() }
-        context.translateBy(x: toe.x, y: toe.y)
-        context.rotate(by: atan2(toe.x - shoulder.x, shoulder.y - toe.y))
-        if mirror { context.scaleBy(x: -1, y: 1) }
-        context.draw(pawImage, in: pawFrame)
-        let extra = min(10, max(0, hypot(toe.x - shoulder.x, shoulder.y - toe.y) - 40))
-        if extra > 0, let upperPaw {
-            context.draw(upperPaw, in: CGRect(x: pawFrame.minX, y: pawFrame.maxY - 18,
-                                              width: pawFrame.width, height: 18 + extra))
-        }
-    }
+    private static let kittenLimb: PortraitLimb? = {
+        guard let coat = kitten?.cropping(to: CGRect(x: 438, y: 927, width: 283, height: 250)), let pawImage else { return nil }
+        return PortraitLimb(fur: coat, straightPaw: pawImage)
+    }()
 
     private static func drawMouse(in context: CGContext, at center: CGPoint, press: CGFloat) {
         context.saveGState()
@@ -223,9 +264,13 @@ enum CatArt {
         let shell = CGRect(x: -10, y: -11, width: 20, height: 23 - 1.5 * press)
         context.setFillColor(CGColor(gray: 0.24, alpha: 1))
         context.fillEllipse(in: shell.offsetBy(dx: 0, dy: -1.0))
-        context.setFillColor(CGColor(srgbRed: 0.96 - 0.20 * press, green: 0.95 + 0.02 * press,
-                                     blue: 0.90 - 0.31 * press, alpha: 1))
-        context.fillEllipse(in: shell)
+        let shellPath = CGPath(ellipseIn: shell, transform: nil)
+        let rubberRim = CGColor(srgbRed: 0.76 - 0.035 * press, green: 0.75 - 0.03 * press,
+                                 blue: 0.69 - 0.035 * press, alpha: 1)
+        gradient(shellPath, top: color(0xFFFAEA), bottom: rubberRim,
+                 minY: shell.minY - 1, maxY: shell.midY + 3.0, in: context)
+        let buttonSeam = shape(0, shell.maxY - 0.8) { $0.line(0, 0.8 - press) }
+        stroke(buttonSeam, with: CGColor(gray: 0.43, alpha: 0.40), width: 0.50, in: context)
         let wheel = CGPath(roundedRect: CGRect(x: -1.15, y: 2 - press, width: 2.3, height: 5.5),
                            cornerWidth: 1.1, cornerHeight: 1.1, transform: nil)
         context.setFillColor(CGColor(srgbRed: 0.55, green: 0.57, blue: 0.51, alpha: 1))

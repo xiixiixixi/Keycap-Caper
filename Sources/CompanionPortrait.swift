@@ -5,27 +5,27 @@ import ImageIO
 final class CompanionPortrait {
     private static let artSize: CGFloat = 385
     private static let dog = CompanionPortrait(
-        asset: "Pickles", frame: CGRect(x: 76, y: 48, width: 168, height: 168),
+        asset: "Pickles", character: .dog, frame: CGRect(x: 76, y: 48, width: 168, height: 168),
         eyes: [CGRect(x: 113, y: 124, width: 55, height: 49), CGRect(x: 214, y: 142, width: 53, height: 50)],
         fur: CGRect(x: 145, y: 303, width: 85, height: 65), lidFur: CGRect(x: 165, y: 99, width: 32, height: 27), hoof: false)
     private static let rabbit = CompanionPortrait(
-        asset: "Pipkin", frame: CGRect(x: 70, y: 47, width: 180, height: 180),
+        asset: "Pipkin", character: .rabbit, frame: CGRect(x: 70, y: 47, width: 180, height: 180),
         eyes: [CGRect(x: 111, y: 190, width: 57, height: 46), CGRect(x: 207, y: 182, width: 56, height: 50)],
         fur: CGRect(x: 157, y: 311, width: 69, height: 51), lidFur: CGRect(x: 169, y: 161, width: 30, height: 24), hoof: false)
     private static let giraffe = CompanionPortrait(
-        asset: "Periscope", frame: CGRect(x: 68, y: 49, width: 184, height: 184),
+        asset: "Periscope", character: .giraffe, frame: CGRect(x: 68, y: 49, width: 184, height: 184),
         eyes: [CGRect(x: 134, y: 82, width: 46, height: 42), CGRect(x: 208, y: 76, width: 42, height: 42)],
         fur: CGRect(x: 167, y: 306, width: 49, height: 65), lidFur: CGRect(x: 171, y: 59, width: 23, height: 18), hoof: true)
     private static let raccoon = CompanionPortrait(
-        asset: "Bandit", frame: CGRect(x: 72, y: 47, width: 176, height: 176),
+        asset: "Bandit", character: .raccoon, frame: CGRect(x: 72, y: 47, width: 176, height: 176),
         eyes: [CGRect(x: 112, y: 125, width: 55, height: 48), CGRect(x: 220, y: 133, width: 50, height: 46)],
         fur: CGRect(x: 68, y: 314, width: 47, height: 46), lidFur: CGRect(x: 81, y: 148, width: 23, height: 20), hoof: false)
     private static let redPanda = CompanionPortrait(
-        asset: "Paprika", frame: CGRect(x: 74, y: 47, width: 172, height: 172),
+        asset: "Paprika", character: .redPanda, frame: CGRect(x: 74, y: 47, width: 172, height: 172),
         eyes: [CGRect(x: 119, y: 119, width: 52, height: 49), CGRect(x: 219, y: 130, width: 50, height: 48)],
         fur: CGRect(x: 162, y: 270, width: 51, height: 51), lidFur: CGRect(x: 177, y: 93, width: 25, height: 21), hoof: false)
     private static let otter = CompanionPortrait(
-        asset: "Pebble", frame: CGRect(x: 70, y: 47, width: 180, height: 180),
+        asset: "Pebble", character: .otter, frame: CGRect(x: 70, y: 47, width: 180, height: 180),
         eyes: [CGRect(x: 106, y: 82, width: 56, height: 54), CGRect(x: 220, y: 95, width: 55, height: 51)],
         fur: CGRect(x: 71, y: 304, width: 49, height: 48), lidFur: CGRect(x: 147, y: 56, width: 24, height: 20), hoof: false)
 
@@ -42,23 +42,26 @@ final class CompanionPortrait {
     }
 
     let eyeCenter: CGPoint
-    private let frame: CGRect
-    private let image: CGImage
+    private let skin: PortraitSkin
+    private let hoof: Bool
+    private let grip: CGImage?
     private let eyes: [PortraitEye]
-    private let paw: CGImage
+    private let limb: PortraitLimb
 
-    private init?(asset: String, frame: CGRect, eyes eyeRects: [CGRect], fur: CGRect, lidFur: CGRect, hoof: Bool) {
+    private init?(asset: String, character: PetCharacter, frame: CGRect, eyes eyeRects: [CGRect], fur: CGRect, lidFur: CGRect, hoof: Bool) {
         guard let url = Bundle.main.url(forResource: asset, withExtension: "png"),
               let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        self.image = image
-        self.frame = frame
+        self.skin = PortraitSkin(image: image, frame: frame, neck: PortraitMotion.neck(for: character))
+        self.hoof = hoof
+        self.grip = Self.loadGrip(for: character)
         let sourceScale = CGFloat(image.width) / Self.artSize
         let toSource = CGAffineTransform(scaleX: sourceScale, y: sourceScale)
         guard let furPatch = image.cropping(to: fur.applying(toSource).integral),
               let eyelid = image.cropping(to: lidFur.applying(toSource).integral),
-              let paw = Self.paintPaw(fur: furPatch, hoof: hoof) else { return nil }
-        self.paw = paw
+              let paw = Self.paintPaw(fur: furPatch, hoof: hoof),
+              let limb = PortraitLimb(fur: furPatch, straightPaw: paw) else { return nil }
+        self.limb = limb
         let targetScale = frame.width / Self.artSize
         self.eyes = eyeRects.compactMap { rect in
             // Include the fur around both eyelids to blend the moving eye with its face.
@@ -76,20 +79,40 @@ final class CompanionPortrait {
                             y: frame.maxY - midpoint.y * targetScale)
     }
 
-    func drawBody(in c: CGContext, gaze: CGVector, blink: CGFloat) {
-        c.draw(image, in: frame)
+    func drawBody(in c: CGContext, gaze: CGVector, blink: CGFloat, motion: PortraitMotion) {
+        skin.draw(in: c, motion: motion)
+        c.saveGState()
+        c.concatenate(motion.head)
         for eye in eyes { eye.draw(in: c, gaze: gaze, blink: blink) }
+        c.restoreGState()
     }
 
-    func drawPaw(in c: CGContext, toe: CGPoint, shoulder: CGPoint) {
-        let dx = toe.x - shoulder.x
-        let dy = shoulder.y - toe.y
-        let length = min(43, max(27, hypot(dx, dy)))
-        c.saveGState()
-        c.translateBy(x: toe.x, y: toe.y)
-        c.rotate(by: atan2(dx, dy))
-        c.draw(paw, in: CGRect(x: -11, y: -1.5, width: 22, height: length + 3))
-        c.restoreGState()
+    func drawPaw(in c: CGContext, toe: CGPoint, shoulder: CGPoint, side: CGFloat, hold: CGFloat) {
+        limb.draw(in: c, shoulder: shoulder, toe: toe, side: side, grip: hold, gripImage: grip, hoof: hoof)
+    }
+
+    private static func loadGrip(for character: PetCharacter) -> CGImage? {
+        let asset: String
+        switch character {
+        case .raccoon: asset = "RaccoonGrip"
+        case .otter: asset = "OtterGrip"
+        default: return nil
+        }
+        guard let url = Bundle.main.url(forResource: asset, withExtension: "png"),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let original = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              let c = CGContext(data: nil, width: original.width, height: original.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        let bounds = CGRect(x: 0, y: 0, width: original.width, height: original.height)
+        c.draw(original, in: bounds)
+        if let g = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+                              colors: [CGColor(gray: 1, alpha: 1), CGColor(gray: 1, alpha: 0)] as CFArray, locations: [0, 1]) {
+            c.setBlendMode(.destinationIn)
+            c.drawLinearGradient(g, start: CGPoint(x: 0, y: 0.71 * bounds.height), end: CGPoint(x: 0, y: bounds.height),
+                                 options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        }
+        return c.makeImage()
     }
 
     private static func paintPaw(fur: CGImage, hoof: Bool) -> CGImage? {

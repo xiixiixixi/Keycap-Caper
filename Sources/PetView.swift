@@ -39,6 +39,11 @@ final class PetView: NSView {
     private var keyIndex: Int?
     private var leftKey: Int?
     private var rightKey: Int?
+    private var leftStart = CGPoint(x: 133, y: 51)
+    private var rightStart = CGPoint(x: 182, y: 51)
+    private var lastBreathSample = -TimeInterval.infinity
+    private var breath: CGFloat = 0
+    private var reducedMotion = false
     private var gaze = CGVector.zero
     private var nextBlink = ProcessInfo.processInfo.systemUptime + 3
     private var blink: CGFloat = 0
@@ -107,9 +112,11 @@ final class PetView: NSView {
 
     private func tapPaw(keyIndex: Int?, rightHand: Bool, at now: TimeInterval) {
         if PetKeyboard.usesScreenRightPaw(for: keyIndex, rightHand: rightHand) {
+            rightStart = strokePoint(right: true, at: now)
             lastRightPress = now
             rightKey = keyIndex
         } else {
+            leftStart = strokePoint(right: false, at: now)
             lastLeftPress = now
             leftKey = keyIndex
         }
@@ -247,6 +254,19 @@ final class PetView: NSView {
             needsDisplay = true
         }
 
+        // A sub-point breath only needs a few fresh idle frames per second.
+        if now - lastBreathSample >= 0.20 {
+            lastBreathSample = now
+            reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            let phase = now * (2 * .pi / 4.7)
+            let sample = reducedMotion ? 0 : (sin(phase) * 0.91 + sin(2 * phase - 0.4) * 0.09)
+            let newBreath = CGFloat((sample * 8).rounded() / 8)
+            if newBreath != breath {
+                breath = newBreath
+                needsDisplay = true
+            }
+        }
+
         let hadBubbles = !bubbles.isEmpty
         bubbles.removeAll { now - $0.born >= 0.82 }
         if now - lastKeyPress >= 0.15 { keyIndex = nil }
@@ -307,24 +327,31 @@ final class PetView: NSView {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         context.clear(bounds)
         let now = ProcessInfo.processInfo.systemUptime
+        let leftAge = now - lastLeftPress
+        let rightAge = now - lastRightPress
+        let pose = affection.pose(at: now)
+        let weight = reducedMotion ? 0 : pawAmount(rightAge - 0.012) - pawAmount(leftAge - 0.012)
         CatArt.draw(
             in: context,
             gaze: now < slipLookUntil ? slipGaze : gaze,
             blink: blink,
-            leftPress: pawAmount(now - lastLeftPress),
-            rightPress: pawAmount(now - lastRightPress),
+            leftPress: pawAmount(leftAge),
+            rightPress: pawAmount(rightAge),
             keyIndex: now - lastKeyPress < 0.15 ? keyIndex : nil,
             leftKey: leftKey,
             rightKey: rightKey,
             mouseReach: mouseReach,
             mouseOffset: mouseOffset,
             mousePress: mousePress,
-            character: actor, scene: deskScene.frame(at: now), affection: affection.pose(at: now)
+            character: actor, scene: deskScene.frame(at: now), affection: pose, life: breath, typingWeight: weight,
+            leftOrigin: leftAge < Self.downstroke ? leftStart : nil,
+            rightOrigin: rightAge < Self.downstroke ? rightStart : nil,
+            underPaws: { self.affection.drawBubble(in: $0, at: now, mouseReach: self.mouseReach, layer: .beforePaws) }
         )
         for bubble in bubbles {
             PetBubbleArt.draw(label: bubble.label, lane: bubble.lane, age: now - bubble.born, in: context)
         }
-        affection.drawBubble(in: context, at: now)
+        affection.drawBubble(in: context, at: now, mouseReach: mouseReach, layer: .afterPaws)
         if let effect = combo {
             ComboArt.draw(effect.trick, age: now - effect.born, reducedMotion: effect.reducedMotion, in: context)
         }
@@ -345,9 +372,22 @@ final class PetView: NSView {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { moving }
 
+    private static let downstroke: TimeInterval = 0.035
+
     private func pawAmount(_ age: TimeInterval) -> CGFloat {
-        guard age < 0.22 else { return 0 }
-        return CGFloat(min(age / 0.025, 1, (0.22 - age) / 0.14))
+        guard age >= 0, age < 0.22 else { return 0 }
+        let phase = age < Self.downstroke ? age / Self.downstroke : min(1, (0.22 - age) / 0.154)
+        return CGFloat(phase * phase * (3 - 2 * phase))
+    }
+
+    // A second key can arrive before the first paw has lifted. Begin the new
+    // stroke where the toes actually are, then let them return to their perch.
+    private func strokePoint(right: Bool, at now: TimeInterval) -> CGPoint {
+        let rest = CGPoint(x: right ? 182 : 133, y: 51)
+        let age = now - (right ? lastRightPress : lastLeftPress)
+        guard age < 0.22 else { return rest }
+        let start = age < Self.downstroke ? (right ? rightStart : leftStart) : nil
+        return CatArt.keyContact(rest: rest, key: right ? rightKey : leftKey, press: pawAmount(age), origin: start)
     }
 
 }

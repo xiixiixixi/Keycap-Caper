@@ -32,7 +32,6 @@ final class PetAffection {
     private var touchDirection: CGFloat = 0
     private var touchLift: CGFloat = 0
     private var pet: PetCharacter = .cat
-    private var eyeCenter = CGPoint(x: 160, y: 134)
     private var reducedMotion = false
 
     var isPetting: Bool { touchAmount > 0.025 }
@@ -79,7 +78,6 @@ final class PetAffection {
     @discardableResult
     func update(cursor: CGPoint, eyeCenter: CGPoint, character: PetCharacter, at now: TimeInterval, reducedMotion: Bool) -> Bool {
         self.pet = character
-        self.eyeCenter = eyeCenter
         self.reducedMotion = reducedMotion
         let wasActive = isActive
         if let catching, now - catching.born >= catching.duration { self.catching = nil }
@@ -183,20 +181,20 @@ final class PetAffection {
         return pose
     }
 
-    func drawBubble(in context: CGContext, at now: TimeInterval) {
+    enum BubbleLayer { case all, beforePaws, afterPaws }
+
+    func drawBubble(in context: CGContext, at now: TimeInterval, mouseReach: CGFloat = 0, layer: BubbleLayer = .all) {
         guard let c = catching else { return }
         let age = CGFloat(now - c.born)
         guard age >= 0, age < CGFloat(c.duration) else { return }
+        let heldInPaws = age >= 1.03 && (c.pet == .raccoon || c.pet == .otter || c.pet == .redPanda || (c.pet == .cat && !c.isPillow))
+        if (layer == .beforePaws && !heldInPaws) || (layer == .afterPaws && heldInPaws) { return }
         if age <= 0.50 {
             PetBubbleArt.draw(label: c.label, lane: c.lane, age: TimeInterval(age), in: context)
             return
         }
         let start = PetBubbleArt.center(lane: c.lane, age: 0.50)
-        var spot = contact(for: c)
-        // Face contacts follow the same hinged transform as their portrait.
-        if [.dog, .rabbit, .giraffe].contains(c.pet) || c.isPillow {
-            spot = spot.applying(CatArt.affectionTransform(pose(at: now)))
-        }
+        let spot = contact(for: c, pose: pose(at: now), mouseReach: mouseReach)
         let fall = Self.smooth((age - 0.50) / 0.66)
         let release = Self.smooth((age - 1.2) / 0.68)
         let motion: CGFloat = reducedMotion ? 0 : 1
@@ -226,15 +224,17 @@ final class PetAffection {
         PetBubbleArt.draw(label: c.label, center: center, alpha: alpha, tilt: tilt, stretch: stretch, in: context)
     }
 
-    private func contact(for c: Catch) -> CGPoint {
+    private func contact(for c: Catch, pose: PetAffectionPose, mouseReach: CGFloat) -> CGPoint {
+        let offset: CGVector
         switch c.pet {
-        case .dog: return CGPoint(x: eyeCenter.x + 5, y: eyeCenter.y - 33)
-        case .rabbit: return CGPoint(x: eyeCenter.x + 8, y: eyeCenter.y - 11)
-        case .giraffe: return CGPoint(x: eyeCenter.x + 10, y: eyeCenter.y - 18)
-        case .cat where c.isPillow: return CGPoint(x: eyeCenter.x + 16, y: eyeCenter.y - 40)
+        case .dog: offset = CGVector(dx: 5, dy: -38)
+        case .rabbit: offset = CGVector(dx: 17, dy: -14)
+        case .giraffe: offset = CGVector(dx: 18, dy: -19)
+        case .cat where c.isPillow: offset = CGVector(dx: 17, dy: -43)
         case .otter, .raccoon: return CGPoint(x: 160, y: 72)
         case .cat, .redPanda: return CGPoint(x: 196, y: 72)
         }
+        return CatArt.faceSpot(offsetFromEyes: offset, character: c.pet, reach: mouseReach, reaction: pose)
     }
 }
 

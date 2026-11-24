@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import ImageIO
 
 /// The desk props use view coordinates, so hands, loose caps and switches share an anchor.
 final class DeskScene {
@@ -11,10 +12,16 @@ final class DeskScene {
         var leftToe: CGPoint?
         var gaze: CGVector?
         var hiddenKey: Int?
+        var grip: CGFloat = 0
+        var lean: CGFloat = 0
+        var bodyLift: CGFloat = 0
+        var headTilt: CGFloat = 0
         fileprivate var capCenter: CGPoint?
         fileprivate var lift: CGFloat = 0
-        fileprivate var startled = false
-        fileprivate var tuck: CGFloat = 0
+        fileprivate var capAngle: CGFloat = 0
+        fileprivate var tension: CGFloat = 0
+        fileprivate var lineSpeed: CGFloat = 0
+        fileprivate var hasSlipper = false
         fileprivate var depth: CGFloat = 0
         fileprivate var catchProgress: CGFloat?
         fileprivate var phase: CGFloat = 0
@@ -32,6 +39,22 @@ final class DeskScene {
         var cast = false
         var caughtAt: TimeInterval?
         var demo = false
+        var shownDepth: CGFloat = 0.22
+        var velocity: CGFloat = 0
+        var hooked = false
+        var integratedAt: TimeInterval?
+
+        // The line catches up to the reel rather than jumping each time a wheel notch arrives.
+        mutating func integrate(at now: TimeInterval) {
+            let dt = min(1, max(0, now - (integratedAt ?? born)))
+            integratedAt = now
+            let offset = shownDepth - depth
+            let omega: CGFloat = 8
+            let carry = velocity + omega * offset
+            let decay = exp(-omega * dt)
+            shownDepth = clamp(depth + (offset + carry * dt) * decay)
+            velocity = (velocity - omega * carry * dt) * decay
+        }
     }
 
     private enum Action {
@@ -81,10 +104,12 @@ final class DeskScene {
         let delta = min(120, max(-120, distance))
         if case .fishing(var fish) = action {
             guard fish.caughtAt == nil else { return }
+            fish.integrate(at: now)
             fish.demo = false
             fish.lastScroll = now
             fish.depth = clamp(fish.depth + delta / 265)
             if fish.depth >= 0.68 { fish.cast = true }
+            if fish.cast && delta < 0 { fish.hooked = true }
             if fish.cast && fish.depth <= 0.10 {
                 fish.caughtAt = now
                 nextFishing = now + 32
@@ -126,6 +151,8 @@ final class DeskScene {
             }
         case .fishing(var fish):
             let age = now - fish.born
+            fish.integrate(at: now)
+            action = .fishing(fish)
             if let caught = fish.caughtAt {
                 if now - caught >= 2.5 { action = nil }
             } else if fish.demo {
@@ -133,6 +160,7 @@ final class DeskScene {
                 else if age < 2.1 { fish.depth = 0.92 }
                 else { fish.depth = 0.92 * (1 - ease((age - 2.1) / 1.4)) }
                 fish.cast = fish.depth >= 0.68 || fish.cast
+                if age > 2.1 { fish.hooked = true }
                 if age >= 3.5 { fish.caughtAt = now }
                 action = .fishing(fish)
             } else if now - fish.lastScroll >= 9 {
@@ -156,25 +184,45 @@ final class DeskScene {
         case nil: return nil
         case .theft(let start, let caught):
             return theftFrame(age: (caught ?? now) - start, caughtAge: caught.map { now - $0 })
-        case .fishing(let fish):
+        case .fishing(var fish):
             let age = max(0, now - fish.born)
+            fish.integrate(at: now)
             var f = Frame(kind: .fishing)
             f.phase = age
-            f.depth = fish.depth
+            f.depth = fish.shownDepth
+            f.lineSpeed = min(1.4, max(-1.4, fish.velocity))
+            f.hasSlipper = fish.hooked
             f.catchProgress = fish.caughtAt.map { max(0, now - $0) }
-            f.fade = min(ease(age / 0.3), fish.demo || fish.caughtAt != nil ? 1 : ease((9 - (now - fish.lastScroll)) / 0.5))
-            if let done = f.catchProgress { f.fade = min(f.fade, ease((2.5 - done) / 0.4)) }
-            f.rightToe = mix(Self.rest, CGPoint(x: 190, y: 59 - fish.depth * 3), f.fade)
-            f.gaze = CGVector(dx: 0.93, dy: -0.43)
+            f.fade = min(ease(age / 0.35), fish.demo || fish.caughtAt != nil ? 1 : ease((9 - (now - fish.lastScroll)) / 0.55))
+            if let done = f.catchProgress { f.fade = min(f.fade, ease((2.5 - done) / 0.5)) }
+            let heft = fish.hooked ? ease((0.88 - f.depth) / 0.37) : 0
+            let rebound = f.catchProgress.map { sin($0 * 11) * exp(-4 * $0) } ?? 0
+            f.tension = max(0, heft * 0.73 - f.lineSpeed * 0.28 + rebound * 0.21)
+            f.lean = (2.1 - 5.0 * f.tension) * ease((age - 0.10) / 0.36) * f.fade
+            f.bodyLift = (1.0 + 2 * heft - f.tension) * f.fade
+            f.headTilt = (-0.065 + 0.12 * heft) * ease((age - 0.06) / 0.30) * f.fade
+            let raise = 3 * heft - 1.8 * f.lineSpeed + 1.0 * rebound
+            f.grip = ease((age - 0.10) / 0.32) * f.fade
+            f.rightToe = mix(Self.rest, CGPoint(x: 189 - 2.2 * heft, y: 58 + raise),
+                             ease((age - 0.10) / 0.32) * f.fade)
+            f.leftToe = mix(CGPoint(x: 133, y: 51), CGPoint(x: 139, y: 52.8),
+                            (0.30 + 0.7 * heft) * f.fade)
+            f.gaze = CGVector(dx: 0.87, dy: -0.85 + 0.56 * (1 - f.depth))
             return f
         case .mahjong(let start):
             let age = max(0, now - start)
             var f = Frame(kind: .mahjong)
             f.phase = age
-            f.fade = min(ease(age / 0.22), ease((2.3 - age) / 0.35))
-            let push = ease((age - 0.30) / 0.32) * (1 - ease((age - 0.78) / 0.32))
-            f.rightToe = mix(Self.rest, CGPoint(x: 203, y: 64), push)
-            f.gaze = CGVector(dx: 0.91, dy: -0.68)
+            f.fade = min(ease(age / 0.20), ease((2.3 - age) / 0.28))
+            let reach = ease((age - 0.21) / 0.42) * (1 - ease((age - 0.92) / 0.54))
+            let nudge = ease((age - 0.64) / 0.15) * (1 - ease((age - 0.84) / 0.25))
+            f.rightToe = mix(Self.rest, CGPoint(x: 202.5 + 3.6 * nudge, y: 57.4 + 2.8 * nudge), reach)
+            f.leftToe = mix(CGPoint(x: 133, y: 51), CGPoint(x: 139, y: 50),
+                            ease((age - 0.14) / 0.52) * (1 - ease((age - 0.94) / 0.59)))
+            f.lean = 3.8 * reach - 1.8 * window(age, 0.82, 1.15, 0.2)
+            f.bodyLift = -1.5 * reach + 1.7 * nudge
+            f.headTilt = -0.052 * window(age, 0.12, 1.2, 0.28) + 0.038 * window(age, 1.1, 1.75, 0.2)
+            f.gaze = CGVector(dx: 0.67 + 0.26 * ease((age - 0.7) / 0.4), dy: -0.76)
             return f
         }
     }
@@ -186,37 +234,67 @@ final class DeskScene {
         let socket = Self.socket
         let rest = Self.rest
         var f = Frame(kind: .theft)
-        let reach = ease((age - 0.65) / 0.85) * (1 - ease((age - 5.35) / 0.58))
-        let lift = ease((age - 1.5) / 0.88) * (1 - ease((age - 4.5) / 0.85))
+        let reach = ease((age - 0.67) / 0.78) * (1 - ease((age - 5.35) / 0.58))
+        let brace = window(age, 0.39, 4.94, 0.40)
+        let pry = window(age, 1.28, 1.76, 0.20)
+        let popped = max(0, age - 1.76)
+        let spring = sin(popped * 19) * exp(-7.5 * popped)
+        let lift = ease(popped / 0.69) * (1 - ease((age - 4.42) / 0.91))
+        let handArc = sin(.pi * lift)
         f.lift = lift
-        let pocket = CGPoint(x: 193, y: 71)
-        let loose = mix(socket, pocket, lift)
-        let pawOnCap = CGPoint(x: loose.x - 3 * lift, y: loose.y + 2.2)
-        f.rightToe = mix(rest, pawOnCap, reach)
-        f.gaze = age < 0.65 ? CGVector(dx: -0.9, dy: 0.15) : CGVector(dx: 0.86, dy: -0.70)
+        f.grip = window(age, 1.16, 5.25, 0.29)
+        f.capAngle = -0.36 * lift + 0.15 * spring
+        let pocket = CGPoint(x: 190, y: 68)
+        var loose = mix(socket, pocket, lift)
+        loose.x += handArc * 2
+        loose.y += (popped > 0 && age < 4.2 ? 4.2 : 2) * handArc + 2.1 * spring
+        // The illustrated thumb opens towards screen-left. Leave the face of the cap outside the palm.
+        let toeOffset = CGPoint(x: 6.2 * lift, y: 2.5 + 1.2 * lift)
+        let contact = CGPoint(x: loose.x + toeOffset.x + 0.85 * pry, y: loose.y + toeOffset.y - 1.1 * pry)
+        var toe = mix(rest, contact, reach)
+        toe.y += 3.5 * sin(.pi * reach)
+        let leftRest = CGPoint(x: 133, y: 51)
+        let bracedToe = mix(leftRest, CGPoint(x: 140, y: 50.5 - 0.8 * pry), brace)
+        f.rightToe = toe
+        f.leftToe = bracedToe
+        f.lean = 4.1 * brace + 2.4 * pry - 3.5 * lift - 2.2 * spring
+        f.bodyLift = -1.8 * brace - 1.5 * pry + 2.7 * lift + 1.85 * spring
+        f.headTilt = 0.035 * window(age, 0.12, 0.49, 0.18)
+            - 0.086 * window(age, 0.48, 4.56, 0.44) + 0.031 * lift
+        let glance = ease((age - 0.32) / 0.34)
+        f.gaze = CGVector(dx: -0.87 + 1.72 * glance - 0.32 * lift, dy: 0.06 - 0.81 * glance)
         if lift > 0.002 {
             f.hiddenKey = kVK_Escape
             f.capCenter = loose
         }
         if let t = caughtAge {
-            f.startled = t < 0.65
             f.gaze = nil
-            // She tucks the cap in her paw and taps two innocent notes with her free hand.
-            f.tuck = ease((t - 0.25) / 0.16) * (1 - ease((t - 0.62) / 0.20))
-            let tapping = clamp((t - 0.40) / 0.63)
-            let dip = abs(sin(2 * .pi * tapping))
-            f.leftToe = CGPoint(x: 133, y: 51 - 3.2 * dip)
-            if let toe = f.rightToe {
-                let replaced = ease((t - 0.62) / 0.46)
-                if f.capCenter != nil {
-                    f.capCenter = mix(loose, socket, replaced)
-                    f.lift *= 1 - replaced
-                    if replaced >= 1 { f.hiddenKey = nil; f.capCenter = nil }
-                }
-                let target = lift > 0.002 ? CGPoint(x: socket.x, y: socket.y + 2.2) : rest
-                let settingDown = mix(toe, target, replaced)
-                f.rightToe = mix(settingDown, rest, ease((t - 1.08) / 0.4))
+            // Hold the caught pose for a beat before looking up and covering the evidence.
+            let flinch = window(t, 0.07, 0.44, 0.19)
+            let tuck = window(t, 0.31, 0.67, 0.17) * lift
+            let replaced = ease((t - 0.67) / 0.43)
+            let release = ease((t - 1.10) / 0.38)
+            let relax = 1 - ease((t - 0.72) / 0.71)
+            f.grip *= 1 - release
+            f.headTilt = f.headTilt * relax + 0.052 * flinch
+            f.lean = f.lean * relax - 1.9 * flinch
+            f.bodyLift = f.bodyLift * relax + 1.8 * flinch
+            let dip = abs(sin(2 * .pi * clamp((t - 0.46) / 0.61)))
+            f.leftToe = mix(bracedToe, CGPoint(x: 133, y: 51 - 3.2 * dip), ease((t - 0.32) / 0.24))
+            if f.capCenter != nil {
+                var tucked = loose
+                tucked.x += 7.2 * tuck
+                tucked.y += 5.8 * tuck
+                f.capCenter = mix(tucked, socket, replaced)
+                f.lift *= 1 - replaced
+                f.capAngle = (f.capAngle - 0.65 * tuck) * (1 - replaced)
+                if replaced >= 1 { f.hiddenKey = nil; f.capCenter = nil }
             }
+            var tuckedToe = toe
+            tuckedToe.x -= 3.1 * tuck
+            tuckedToe.y += 5.6 * tuck
+            let target = lift > 0.002 ? CGPoint(x: socket.x, y: socket.y + 2.5) : rest
+            f.rightToe = mix(mix(tuckedToe, target, replaced), rest, release)
         }
         return f
     }
@@ -227,6 +305,10 @@ fileprivate func clamp(_ t: CGFloat) -> CGFloat { min(1, max(0, t)) }
 fileprivate func ease(_ t: CGFloat) -> CGFloat {
     let n = clamp(t)
     return n * n * (3 - 2 * n)
+}
+
+fileprivate func window(_ t: CGFloat, _ start: CGFloat, _ end: CGFloat, _ ramp: CGFloat) -> CGFloat {
+    ease((t - start) / ramp) * (1 - ease((t - end) / ramp))
 }
 
 fileprivate func mix(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
@@ -240,100 +322,221 @@ private enum DeskSceneArt {
     private static let red = NSColor(srgbRed: 0.83, green: 0.29, blue: 0.26, alpha: 1).cgColor
     private static let teal = NSColor(srgbRed: 0.28, green: 0.59, blue: 0.56, alpha: 1).cgColor
 
+    private static let esc = image("DeskEsc")
+    private static let bobber = image("DeskBobber")
+    private static let slipper = image("DeskSlipper")
+    private static let tile = image("DeskTile")
+
+    private static func image(_ name: String) -> CGImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
+              let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+    }
+
     static func draw(_ f: DeskScene.Frame, in c: CGContext) {
         c.saveGState()
         defer { c.restoreGState() }
         c.setLineCap(.round)
         c.setLineJoin(.round)
+        c.interpolationQuality = .high
         c.setAlpha(f.fade)
         switch f.kind {
         case .theft:
-            if let cap = f.capCenter {
-                let shown = CGPoint(x: cap.x + 3.6 * f.lift - 6.5 * f.tuck,
-                                    y: cap.y - 1.9 * f.lift + 7.0 * f.tuck)
-                PetKeyboard.drawLooseCap(kVK_Escape, center: shown, scale: 1 + 0.67 * f.lift,
-                                         rotation: -0.33 * f.lift - 0.35 * f.tuck, in: c)
-            }
-            if f.startled {
-                stroke(c, from: CGPoint(x: 200, y: 175), to: CGPoint(x: 202, y: 182), color: amber, width: 2.1)
-                stroke(c, from: CGPoint(x: 205, y: 173), to: CGPoint(x: 210, y: 177), color: amber, width: 1.8)
+            guard let cap = f.capCenter else { return }
+            if let esc {
+                c.translateBy(x: cap.x, y: cap.y)
+                c.rotate(by: f.capAngle)
+                let width = 10 + 4 * f.lift
+                let height = 4.2 + 7.8 * ease(f.lift * 1.6)
+                c.draw(esc, in: CGRect(x: -width * 0.5, y: -height * 0.46, width: width, height: height))
+            } else {
+                PetKeyboard.drawLooseCap(kVK_Escape, center: cap, scale: 1 + 0.5 * f.lift,
+                                         rotation: f.capAngle, in: c)
             }
         case .fishing: fishing(f, in: c)
         case .mahjong: tiles(f.phase, in: c)
         }
     }
 
+    private static let cane = NSColor(srgbRed: 0.62, green: 0.38, blue: 0.20, alpha: 1).cgColor
+    private static let guide = NSColor(srgbRed: 0.46, green: 0.49, blue: 0.45, alpha: 1).cgColor
+
     private static func fishing(_ f: DeskScene.Frame, in c: CGContext) {
         guard let paw = f.rightToe else { return }
-        let catchAge = f.catchProgress ?? 0
-        let lift = ease(catchAge / 0.63)
-        let tip = CGPoint(x: 252 - 6 * lift, y: 114 - 4 * f.depth + 6 * lift)
-        let handle = CGPoint(x: paw.x - 3, y: paw.y + 1)
-        let mid = CGPoint(x: 230, y: 116 + 4 * lift)
-        let pole = CGMutablePath()
-        pole.move(to: handle)
-        pole.addQuadCurve(to: tip, control: mid)
-        c.addPath(pole); c.setStrokeColor(ink); c.setLineWidth(3.3); c.strokePath()
-        c.addPath(pole); c.setStrokeColor(amber); c.setLineWidth(1.7); c.strokePath()
-        let reel = CGPoint(x: handle.x + 13, y: handle.y + 9)
-        ellipse(c, CGRect(x: reel.x - 4.1, y: reel.y - 4.1, width: 8.2, height: 8.2), fill: teal)
-        stroke(c, from: reel, to: CGPoint(x: reel.x + 3 * cos(f.depth * 17), y: reel.y + 3 * sin(f.depth * 17)), color: ivory, width: 1.5)
+        let grip = CGPoint(x: paw.x + 1, y: paw.y + 2)
+        let length: CGFloat = 85
+        let angle = 0.68 - 0.105 * f.lineSpeed + 0.085 * f.tension
+        let direction = CGPoint(x: cos(angle), y: sin(angle))
+        let normal = CGPoint(x: -direction.y, y: direction.x)
+        let bend = 9 + 17 * f.tension
+        func shaft(_ s: CGFloat) -> CGPoint {
+            CGPoint(x: grip.x + length * s * direction.x + 2.8 * f.tension * s * s,
+                    y: grip.y + length * s * direction.y - bend * s * s * s)
+        }
+        // A tapered cane with ferrules and a cork grip. Flex is concentrated near the tip.
+        let rod = CGMutablePath()
+        for i in 0...14 {
+            let u = CGFloat(i) / 14
+            let p = shaft(u)
+            let r = 1.72 - 1.20 * u
+            let q = CGPoint(x: p.x + normal.x * r, y: p.y + normal.y * r)
+            if i == 0 { rod.move(to: q) } else { rod.addLine(to: q) }
+        }
+        for i in (0...14).reversed() {
+            let u = CGFloat(i) / 14
+            let p = shaft(u)
+            let r = 1.72 - 1.20 * u
+            rod.addLine(to: CGPoint(x: p.x - normal.x * r, y: p.y - normal.y * r))
+        }
+        rod.closeSubpath()
+        c.setFillColor(cane); c.setStrokeColor(ink); c.setLineWidth(0.55)
+        c.addPath(rod); c.drawPath(using: .fillStroke)
+        let varnish = CGMutablePath()
+        for i in 2...14 {
+            let u = CGFloat(i) / 15
+            let p = shaft(u)
+            let q = CGPoint(x: p.x + normal.x * (0.72 - u * 0.5),
+                            y: p.y + normal.y * (0.72 - u * 0.5))
+            if i == 2 { varnish.move(to: q) } else { varnish.addLine(to: q) }
+        }
+        c.addPath(varnish)
+        c.setStrokeColor(amber)
+        c.setLineWidth(0.52)
+        c.strokePath()
+        for joint: CGFloat in [0.25, 0.58, 0.84] {
+            let p = shaft(joint)
+            let r = 1.73 - joint
+            let a = CGPoint(x: p.x - normal.x * r, y: p.y - normal.y * r)
+            let b = CGPoint(x: p.x + normal.x * r, y: p.y + normal.y * r)
+            stroke(c, from: a, to: b, color: ink, width: 1.25)
+            stroke(c, from: mix(a, b, 0.35), to: b, color: guide, width: 0.6)
+        }
+        let butt = CGPoint(x: grip.x - direction.x * 6, y: grip.y - direction.y * 6)
+        stroke(c, from: butt, to: shaft(0.14), color: ink, width: 4.9)
+        stroke(c, from: butt, to: shaft(0.14), color: cane, width: 3.7)
+        for u: CGFloat in [-0.045, 0.004, 0.046, 0.1] {
+            stroke(c, from: shaft(u), to: shaft(u + 0.006), color: amber, width: 3.3)
+        }
+        let seat = shaft(0.17)
+        let reel = CGPoint(x: seat.x + 1, y: seat.y - 4.5)
+        stroke(c, from: seat, to: reel, color: ink, width: 1.6)
+        ellipse(c, CGRect(x: reel.x - 3.8, y: reel.y - 3.5, width: 7.6, height: 7), fill: guide)
+        let rotation = f.depth * 24
+        for i in 0..<4 {
+            let angle = rotation + CGFloat(i) * .pi / 2
+            let hole = CGPoint(x: reel.x + 1.9 * cos(angle), y: reel.y + 1.7 * sin(angle))
+            c.setFillColor(ink)
+            c.fillEllipse(in: CGRect(x: hole.x - 0.6, y: hole.y - 0.65, width: 1.2, height: 1.3))
+        }
+        c.setStrokeColor(ivory.copy(alpha: 0.78)!)
+        c.setLineWidth(0.5)
+        c.beginPath()
+        c.addArc(center: reel, radius: 2.8, startAngle: 0.20 * .pi, endAngle: 0.86 * .pi, clockwise: false)
+        c.strokePath()
+        let crank = CGPoint(x: reel.x + 3.1 * cos(f.depth * 24), y: reel.y + 3.1 * sin(f.depth * 24))
+        stroke(c, from: reel, to: crank, color: ink, width: 1.15)
+        c.setFillColor(amber)
+        c.fillEllipse(in: CGRect(x: crank.x - 0.75, y: crank.y - 0.75, width: 1.5, height: 1.5))
 
-        let sway = sin(f.phase * 2.6) * 1.1
-        let float = CGPoint(x: tip.x + 3 + sway - lift * 1.5, y: tip.y - 26 - 58 * f.depth + 3 * lift)
+        let tip = shaft(1)
+        let caught = f.catchProgress ?? 0
+        let swing = (f.catchProgress != nil ? sin(caught * 7.3) * exp(-2.3 * caught) * 0.11 : 0)
+        let lineAngle = 0.023 + 0.046 * f.lineSpeed + swing
+        let lineLength = 24 + 56 * f.depth
+        let hanging = CGPoint(x: tip.x + sin(lineAngle) * lineLength,
+                              y: tip.y - cos(lineAngle) * lineLength)
+        let waterY: CGFloat = 24
+        let slack = max(0, waterY - hanging.y)
+        let float = CGPoint(x: hanging.x + slack * 0.16, y: max(waterY, hanging.y))
         let line = CGMutablePath()
         line.move(to: tip)
-        line.addQuadCurve(to: float, control: CGPoint(x: float.x + 1.7, y: (tip.y + float.y) * 0.5))
-        c.addPath(line); c.setStrokeColor(ink.copy(alpha: 0.78)!); c.setLineWidth(1.8); c.strokePath()
-        c.addPath(line); c.setStrokeColor(ivory); c.setLineWidth(0.65); c.strokePath()
-        let bobber = CGRect(x: float.x - 3.4, y: float.y - 5.4, width: 6.8, height: 10.8)
-        ellipse(c, bobber, fill: ivory)
+        line.addQuadCurve(to: CGPoint(x: float.x, y: float.y + 4.4),
+                          control: CGPoint(x: (float.x + tip.x) * 0.5 + slack * 0.36 + f.lineSpeed * 1.75,
+                                           y: (tip.y + float.y) * 0.5 - slack * 0.55))
+        c.addPath(line); c.setStrokeColor(ink.copy(alpha: 0.67)!); c.setLineWidth(1.25); c.strokePath()
+        c.addPath(line); c.setStrokeColor(ivory.copy(alpha: 0.88)!); c.setLineWidth(0.48); c.strokePath()
+        let floatAngle = -lineAngle + min(0.3, slack * 0.025) * sin(f.phase * 5.2)
         c.saveGState()
-        c.clip(to: CGRect(x: bobber.minX, y: float.y, width: bobber.width, height: 7))
-        ellipse(c, bobber, fill: red)
+        c.translateBy(x: float.x, y: float.y)
+        c.rotate(by: floatAngle)
+        if let bobber {
+            c.draw(bobber, in: CGRect(x: -2.9, y: -6.7, width: 5.8, height: 13.4))
+        } else {
+            ellipse(c, CGRect(x: -2.6, y: -5.9, width: 5.2, height: 11.8), fill: ivory)
+            c.setFillColor(red); c.fillEllipse(in: CGRect(x: -2.2, y: 0.4, width: 4.4, height: 5.2))
+        }
         c.restoreGState()
-        stroke(c, from: CGPoint(x: float.x, y: float.y - 5), to: CGPoint(x: float.x, y: float.y - 9), color: ink, width: 1.1)
-        if f.catchProgress != nil {
+        let tail = CGPoint(x: float.x + 6.4 * sin(floatAngle), y: float.y - 6.4 * cos(floatAngle))
+        let hook = CGPoint(x: tail.x - 0.8, y: tail.y - 5.1)
+        stroke(c, from: tail, to: CGPoint(x: hook.x + 1.0, y: hook.y + 0.3), color: guide, width: 0.9)
+        if f.hasSlipper {
             c.saveGState()
-            c.translateBy(x: float.x, y: float.y - 11)
-            c.rotate(by: -0.25 + sin(catchAge * 8) * 0.18 * exp(-catchAge * 2))
-            let shoe = CGMutablePath()
-            shoe.move(to: CGPoint(x: -3, y: 2))
-            shoe.addQuadCurve(to: CGPoint(x: -13, y: -4), control: CGPoint(x: -13, y: 2))
-            shoe.addQuadCurve(to: CGPoint(x: -10, y: -8), control: CGPoint(x: -14, y: -8))
-            shoe.addLine(to: CGPoint(x: 9, y: -8))
-            shoe.addQuadCurve(to: CGPoint(x: 13, y: -3), control: CGPoint(x: 14, y: -7))
-            shoe.addQuadCurve(to: CGPoint(x: 7, y: 1), control: CGPoint(x: 12, y: 1))
-            shoe.addLine(to: CGPoint(x: 5, y: -2))
-            shoe.addLine(to: CGPoint(x: 0, y: -2))
-            shoe.closeSubpath()
-            paint(c, shoe, fill: amber)
-            stroke(c, from: CGPoint(x: -10, y: -5.7), to: CGPoint(x: 9, y: -5.7), color: ivory, width: 1.6)
-            stroke(c, from: CGPoint(x: -5, y: 0.4), to: CGPoint(x: -2, y: -2.9), color: red, width: 1.7)
+            // The hook and shoe pass through the same surface on the way out.
+            c.clip(to: CGRect(x: 0, y: waterY - 2, width: 320, height: 250))
+            c.translateBy(x: hook.x, y: hook.y)
+            let wobble = f.catchProgress.map { sin($0 * 8.4 - 0.4) * exp(-1.85 * $0) } ?? 0
+            c.rotate(by: 0.92 + 0.17 * f.lineSpeed + 0.24 * wobble)
+            let w: CGFloat = 29
+            let h: CGFloat = 15.55
+            let shoeBounds = CGRect(x: -0.68 * w, y: -0.43 * h, width: w, height: h)
+            if let slipper {
+                c.draw(slipper, in: shoeBounds)
+            } else {
+                paint(c, CGPath(roundedRect: shoeBounds.insetBy(dx: 0, dy: 2), cornerWidth: 4.0, cornerHeight: 4.0, transform: nil), fill: amber)
+            }
             c.restoreGState()
-        } else if f.depth > 0.50 {
-            c.setStrokeColor(teal.copy(alpha: (f.depth - 0.5) * 1.4)!)
-            c.setLineWidth(1.1)
-            c.strokeEllipse(in: CGRect(x: float.x - 13, y: float.y - 4, width: 26, height: 4))
+        }
+        let hookPath = CGMutablePath()
+        hookPath.move(to: CGPoint(x: hook.x + 1.1, y: hook.y + 1.1))
+        hookPath.addQuadCurve(to: CGPoint(x: hook.x - 1.4, y: hook.y + 1.2),
+                              control: CGPoint(x: hook.x, y: hook.y - 1.7))
+        c.addPath(hookPath); c.setStrokeColor(guide); c.setLineWidth(0.85); c.strokePath()
+        let surface = ease((waterY + 12 - float.y) / 12)
+        if surface > 0 {
+            c.setStrokeColor(teal.copy(alpha: 0.67 * surface)!); c.setLineWidth(0.8)
+            let radius = 8 + 3 * sin(f.phase * 3)
+            c.strokeEllipse(in: CGRect(x: float.x - radius, y: waterY - 2.1,
+                                       width: radius * 2, height: 3.6))
         }
     }
 
+    private static let ranks: [[CGPoint]] = [
+        [.zero],
+        [CGPoint(x: -1.65, y: 2.5), CGPoint(x: 1.65, y: -2.5)],
+        [CGPoint(x: -1.9, y: 3), .zero, CGPoint(x: 1.9, y: -3)],
+        [CGPoint(x: -2.05, y: 2.6), CGPoint(x: 2.05, y: 2.6), CGPoint(x: -2.05, y: -2.6), CGPoint(x: 2.05, y: -2.6)]
+    ]
+
     private static func tiles(_ age: CGFloat, in c: CGContext) {
-        let push = ease((age - 0.25) / 0.42)
-        for i in 0..<4 {
-            let fall = ease((age - 0.42 - Double(i) * 0.09) / 0.26)
+        for i in (0..<4).reversed() {
+            let t = age - (0.70 + Double(i) * 0.115)
+            let falling = clamp(t / 0.25)
+            let hitAngle = i == 3 ? 1.50 : 0.81
+            let rebound = max(0, t - 0.25)
+            let angle = hitAngle * falling * falling -
+                0.14 * sin(rebound * 20) * exp(-rebound * 8)
+            let push = ease(t / 0.21)
             c.saveGState()
-            c.translateBy(x: 207 + CGFloat(i) * 14.4 + 3 * push, y: 52)
-            c.rotate(by: -fall * 0.61)
-            let body = CGRect(x: -5.7, y: 0, width: 11.4, height: 15.2)
-            paint(c, CGPath(roundedRect: body, cornerWidth: 2, cornerHeight: 2, transform: nil), fill: teal)
-            let face = CGRect(x: -5.7, y: 2.1, width: 10.3, height: 13.2)
-            paint(c, CGPath(roundedRect: face, cornerWidth: 1.8, cornerHeight: 1.8, transform: nil), fill: ivory)
-            for n in 0...i {
-                let x = (i % 2 == 0 && n == i) ? -0.6 : (n % 2 == 0 ? -2.7 : 1.8)
-                let y = i == 0 ? 8.6 : ((n / 2) == 0 ? 10.4 : 6.3)
-                c.setFillColor(i == 0 || i == 3 ? red : teal)
-                c.fillEllipse(in: CGRect(x: x - 1.1, y: y - 1.1, width: 2.2, height: 2.2))
+            // Balance on the bottom-right corner until this tile touches its neighbour.
+            c.translateBy(x: 213 + CGFloat(i) * 13.3 + push * 0.95, y: 52.5)
+            c.setFillColor(ink.copy(alpha: 0.16)!)
+            c.fillEllipse(in: CGRect(x: -11 + sin(angle) * 5, y: -1.15,
+                                     width: 12 + sin(angle) * 4, height: 2.3))
+            c.rotate(by: -angle)
+            let body = CGRect(x: -12, y: 0, width: 12, height: 16)
+            if let tile {
+                c.draw(tile, in: body)
+            } else {
+                paint(c, CGPath(roundedRect: body, cornerWidth: 1.6, cornerHeight: 1.6, transform: nil), fill: ivory)
+            }
+            let center = CGPoint(x: body.minX + body.width * 0.46, y: body.midY - 0.4)
+            for offset in ranks[i] {
+                let r: CGFloat = i == 0 ? 2.2 : 1.35
+                let x = center.x + offset.x, y = center.y + offset.y
+                c.setFillColor(i < 2 ? red : teal)
+                c.fillEllipse(in: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2))
+                c.setFillColor(ivory)
+                c.fillEllipse(in: CGRect(x: x - 0.4, y: y - 0.4, width: 0.8, height: 0.8))
             }
             c.restoreGState()
         }

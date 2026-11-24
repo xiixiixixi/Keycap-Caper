@@ -137,14 +137,15 @@ enum PetKeyboard {
         c.fillPath()
     }
 
-    private static func drawCap(_ cap: Cap, in c: CGContext, pressed: Bool) {
+    private static func drawCap(_ cap: Cap, in c: CGContext, pressed: Bool, pressure: CGFloat = 0) {
         let rect = cap.frame
         let accent = cap.key.code == kVK_Escape || cap.key.code == kVK_Return
         let edge = pressed ? activeEdge : (accent ? ochreEdge : capEdge)
         let face = pressed ? active : (accent ? ochre : cap.key.code == kVK_Space ? sage : ivory)
         pill(c, rect, radius: 0.8, color: edge)
-        let inset: CGFloat = pressed ? 0.15 : 0.55
-        let top = CGRect(x: rect.minX, y: rect.minY + inset, width: rect.width, height: rect.height - inset)
+        let travel = 0.64 * min(1, max(0, pressure))
+        let top = CGRect(x: rect.minX, y: rect.minY + 0.72 - travel,
+                         width: rect.width, height: rect.height - 0.72)
         pill(c, top, radius: 0.66, color: face)
         guard !cap.key.legend.isEmpty else { return }
         c.saveGState()
@@ -175,7 +176,7 @@ enum PetKeyboard {
         return c.makeImage()
     }()
 
-    static func draw(in c: CGContext, activeKey: Int?, hiddenKey: Int? = nil) {
+    static func draw(in c: CGContext, activeKey: Int?, hiddenKey: Int? = nil, pressure: CGFloat = 1) {
         c.saveGState()
         defer { c.restoreGState() }
         if let image = restingImage {
@@ -190,7 +191,9 @@ enum PetKeyboard {
             let stem = CGRect(x: r.midX - 1.3, y: r.midY - 0.8, width: 2.6, height: 1.6)
             pill(c, stem, radius: 0.4, color: capEdge)
         }
-        if let key = activeKey, key != hiddenKey, let cap = byCode[key] { drawCap(cap, in: c, pressed: true) }
+        if let key = activeKey, key != hiddenKey, let cap = byCode[key] {
+            drawCap(cap, in: c, pressed: true, pressure: pressure)
+        }
     }
 
     static func drawLooseCap(_ code: Int, center: CGPoint, scale: CGFloat, rotation: CGFloat, in c: CGContext) {
