@@ -5,6 +5,15 @@ project_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 cd -- "$project_dir"
 output_dir="$project_dir/.build"
 app_name="Keycap Caper.app"
+publisher_signer="$HOME/Library/Application Support/Keycap Caper Release Publisher/sign-app"
+signer="${CAPER_APP_SIGNER:-}"
+if [[ -z "$signer" && -e "$publisher_signer" ]]; then
+    signer="$publisher_signer"
+fi
+if [[ -n "$signer" && ( "$signer" != /* || ! -f "$signer" || ! -x "$signer" ) ]]; then
+    echo "The code signing tool must be an executable file at an absolute path." >&2
+    exit 1
+fi
 mkdir -p -- "$output_dir"
 staging_dir="$(mktemp -d "$output_dir/staging.XXXXXXXX")"
 trap 'rm -rf -- "$staging_dir"' EXIT
@@ -40,8 +49,13 @@ for arch in arm64 x86_64; do
 done
 xcrun lipo -create "$staging_dir"/helper-{arm64,x86_64} -output "$app/Contents/Helpers/CaperUpdateInstaller"
 xcrun lipo -create "$staging_dir"/pet-{arm64,x86_64} -output "$app/Contents/MacOS/GreenEyedCat"
-codesign --force --sign - "$app/Contents/Helpers/CaperUpdateInstaller"
-codesign --sign - "$app"
+if [[ -n "$signer" ]]; then
+    "$signer" "$app/Contents/Helpers/CaperUpdateInstaller"
+    "$signer" "$app"
+else
+    codesign --force --sign - "$app/Contents/Helpers/CaperUpdateInstaller"
+    codesign --sign - "$app"
+fi
 codesign --verify --deep --strict "$app"
 
 xcrun swift - "$app" "$output_dir/$app_name" <<'SWIFT'

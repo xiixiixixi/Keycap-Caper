@@ -38,6 +38,10 @@
 
 从源码构建需要苹果的命令行开发工具。运行 `bash build.sh` 后，可在 `.build` 找到通用版应用。桌宠运行时无需安装开发工具。
 
+正式发行包会沿用项目专属的本地签名证书，供系统在更新后认出同一个桌宠。从 2.3 或更早的临时签名版本首次升级时，系统可能会要求重新打开「输入监控」。应用更新清单另有独立的签名密钥。
+
+维护者可以用 `CAPER_APP_SIGNER` 指定本机签名工具的绝对路径。构建脚本会把更新助手和应用的路径依次传给它。常规开发构建在缺少签名工具时使用临时签名。生成正式更新包时，脚本会校验应用标识，并将两个处理器架构的应用和更新助手证书逐一与 `Branding/AppSignerSHA256.txt` 中的指纹核对。
+
 ## 素材与署名
 
 - 部分键盘响应代码改编自 [BongoCat-mac（敲键猫）](https://github.com/Gamma-Software/BongoCat-mac)，作者 Valentin Rudloff。仓库和应用均附 [MIT（宽松开源许可）原文](ThirdParty/BongoCat-mac-LICENSE.txt)。

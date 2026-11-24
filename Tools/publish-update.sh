@@ -6,6 +6,13 @@ app="${1:-$project_dir/.build/Keycap Caper.app}"
 channel="${2:-$project_dir/.build/release}"
 private_key="${CAPER_SIGNING_KEY:?Set CAPER_SIGNING_KEY to the publisher private key path.}"
 public_key="$project_dir/Branding/UpdatePublicKey.txt"
+[[ ! -L "$app" && "$(basename "$app")" = "Keycap Caper.app" ]] || { echo "Expected the Keycap Caper application bundle." >&2; exit 1; }
+mkdir -p -- "$channel"
+staging="$(mktemp -d "$channel/.publish.XXXXXXXX")"
+trap 'rm -rf -- "$staging"' EXIT
+# Verify and package one snapshot even if a concurrent build replaces its output.
+cp -R -X -- "$app" "$staging/Keycap Caper.app"
+app="$staging/Keycap Caper.app"
 plist="$app/Contents/Info.plist"
 version="$(plutil -extract CFBundleShortVersionString raw "$plist")"
 build="$(plutil -extract CFBundleVersion raw "$plist")"
@@ -15,7 +22,10 @@ build="$(plutil -extract CFBundleVersion raw "$plist")"
 }
 notes="${3:-$project_dir/Releases/$version.txt}"
 test -s "$notes"
-codesign --verify --strict --deep "$app"
+codesign --verify --strict --deep --all-architectures "$app"
+test "$(plutil -extract CFBundleIdentifier raw "$plist")" = "org.keycapcaper.desktop"
+codesign --verify --all-architectures -R='identifier "org.keycapcaper.desktop"' "$app"
+codesign --verify --strict --all-architectures -R='identifier "org.keycapcaper.desktop.updater"' "$app/Contents/Helpers/CaperUpdateInstaller"
 cmp "$public_key" "$app/Contents/Resources/UpdatePublicKey.txt"
 for executable in "$app/Contents/MacOS/GreenEyedCat" "$app/Contents/Helpers/CaperUpdateInstaller"; do
     case "$(xcrun lipo -archs "$executable")" in
@@ -24,9 +34,18 @@ for executable in "$app/Contents/MacOS/GreenEyedCat" "$app/Contents/Helpers/Cape
     esac
 done
 
-mkdir -p -- "$channel"
-staging="$(mktemp -d "$channel/.publish.XXXXXXXX")"
-trap 'rm -rf -- "$staging"' EXIT
+expected_signer="$(cat "$project_dir/Branding/AppSignerSHA256.txt")"
+[[ "$expected_signer" =~ ^[0-9a-f]{64}$ ]] || { echo "Invalid release certificate fingerprint." >&2; exit 1; }
+for program in "$app" "$app/Contents/Helpers/CaperUpdateInstaller"; do
+    for arch in arm64 x86_64; do
+        prefix="$staging/$(basename "$program")-$arch-cert"
+        codesign --display --arch "$arch" --extract-certificates="$prefix" "$program"
+        if [[ ! -s "${prefix}0" ]] || [[ "$(shasum -a 256 < "${prefix}0" | cut -d ' ' -f 1)" != "$expected_signer" ]]; then
+            echo "Unexpected release signing certificate for $(basename "$program") ($arch)." >&2
+            exit 1
+        fi
+    done
+done
 python3 - "$app" "$staging/update.zip" <<'PY'
 import stat
 import sys
