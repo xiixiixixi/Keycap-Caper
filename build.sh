@@ -12,7 +12,7 @@ app="$staging_dir/$app_name"
 mkdir -p -- "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers"
 
 cp -X -- "$project_dir/Info.plist" "$app/Contents/Info.plist"
-for portrait in Kitten Pickles Pipkin Periscope; do
+for portrait in Kitten Pickles Pipkin Periscope Bandit Paprika Pebble; do
     cp -X -- "$project_dir/Art/$portrait.png" "$app/Contents/Resources/"
 done
 cp -X -- "$project_dir/Branding/UpdatePublicKey.txt" "$app/Contents/Resources/"

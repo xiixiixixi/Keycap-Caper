@@ -16,6 +16,18 @@ final class CompanionPortrait {
         asset: "Periscope", frame: CGRect(x: 68, y: 49, width: 184, height: 184),
         eyes: [CGRect(x: 134, y: 82, width: 46, height: 42), CGRect(x: 208, y: 76, width: 42, height: 42)],
         fur: CGRect(x: 167, y: 306, width: 49, height: 65), lidFur: CGRect(x: 171, y: 59, width: 23, height: 18), hoof: true)
+    private static let raccoon = CompanionPortrait(
+        asset: "Bandit", frame: CGRect(x: 72, y: 47, width: 176, height: 176),
+        eyes: [CGRect(x: 112, y: 125, width: 55, height: 48), CGRect(x: 220, y: 133, width: 50, height: 46)],
+        fur: CGRect(x: 68, y: 314, width: 47, height: 46), lidFur: CGRect(x: 81, y: 148, width: 23, height: 20), hoof: false)
+    private static let redPanda = CompanionPortrait(
+        asset: "Paprika", frame: CGRect(x: 74, y: 47, width: 172, height: 172),
+        eyes: [CGRect(x: 119, y: 119, width: 52, height: 49), CGRect(x: 219, y: 130, width: 50, height: 48)],
+        fur: CGRect(x: 162, y: 270, width: 51, height: 51), lidFur: CGRect(x: 177, y: 93, width: 25, height: 21), hoof: false)
+    private static let otter = CompanionPortrait(
+        asset: "Pebble", frame: CGRect(x: 70, y: 47, width: 180, height: 180),
+        eyes: [CGRect(x: 106, y: 82, width: 56, height: 54), CGRect(x: 220, y: 95, width: 55, height: 51)],
+        fur: CGRect(x: 71, y: 304, width: 49, height: 48), lidFur: CGRect(x: 147, y: 56, width: 24, height: 20), hoof: false)
 
     static func forCharacter(_ character: PetCharacter) -> CompanionPortrait? {
         switch character {
@@ -23,6 +35,9 @@ final class CompanionPortrait {
         case .dog: return dog
         case .rabbit: return rabbit
         case .giraffe: return giraffe
+        case .raccoon: return raccoon
+        case .redPanda: return redPanda
+        case .otter: return otter
         }
     }
 
@@ -155,12 +170,17 @@ private final class PortraitEye {
                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
               let bytes = canvas.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
         canvas.interpolationQuality = .high
-        canvas.draw(eyelid, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let tile = CGRect(x: 0, y: 0, width: width, height: height)
+        canvas.draw(eyelid, in: tile)
         lid = Array(UnsafeBufferPointer(start: bytes, count: height * width * 4))
-        canvas.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        canvas.setBlendMode(.copy)
+        canvas.draw(image, in: tile)
         self.canvas = canvas
         output = bytes
         original = Array(UnsafeBufferPointer(start: bytes, count: height * width * 4))
+        // The portrait already supplies the fur and its antialiased silhouette.
+        // Only changed eye pixels should cover it.
+        canvas.clear(tile)
     }
 
     func draw(in c: CGContext, gaze: CGVector, blink: CGFloat) {
@@ -180,12 +200,17 @@ private final class PortraitEye {
                 for x in 0..<width {
                     let u = (Double(x) + 0.5 - rx) / rx
                     let alpha = max(0, 1 - u*u - v*v)
-                    guard alpha > 0 else { continue } // outside the eye patch always stays original
+                    let destination = 4 * (y * width + x)
+                    // Even solid fur can carry slight transparency in the portrait PNG.
+                    guard alpha > 0, original[destination + 3] >= 240 else { continue }
                     let falloff = alpha * alpha
                     let sx = Double(x) - shiftX * falloff
                     let sy = Double(y) - shiftY * falloff
-                    let destination = 4 * (y * width + x)
                     sample(x: sx, y: sy, to: destination)
+                    if output[destination + 3] < 240 {
+                        for channel in 0..<4 { output[destination + channel] = 0 }
+                        continue
+                    }
                     if closed > 0 {
                         // A curved upper and lower eyelid are painted with forehead
                         // fibers from the same animal. Their soft edges meet in a seam.
@@ -210,7 +235,12 @@ private final class PortraitEye {
             lastY = vy
             lastBlink = closed
         }
-        if let lastImage { c.draw(lastImage, in: frame) }
+        if let lastImage {
+            c.saveGState()
+            c.setBlendMode(.sourceAtop)
+            c.draw(lastImage, in: frame)
+            c.restoreGState()
+        }
     }
 
     private func sample(x: Double, y: Double, to destination: Int) {

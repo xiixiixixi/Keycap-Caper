@@ -136,8 +136,8 @@ enum CatArt {
         ellipse(x: x + 20, y: y - 35, width: 13, height: 13, with: color(0xB9D69D), in: context)
     }
 
-    // A single, fixed-size furry forepaw pivots from the chest. Only its angle and
-    // contact point change, keeping the toes the same size on the mouse and keys.
+    // The toes keep their shape. The patch above the wrist covers the small
+    // gap to the chest when the paw reaches the far edge of the keyboard.
     private static let pawFrame = CGRect(x: -12, y: -2, width: 24, height: 37)
     private static let pawImage: CGImage? = {
         guard let coat = kitten?.cropping(to: CGRect(x: 438, y: 927, width: 283, height: 250)),
@@ -184,6 +184,8 @@ enum CatArt {
         return c.makeImage()
     }()
 
+    private static let upperPaw = pawImage?.cropping(to: CGRect(x: 0, y: 0, width: 96, height: 72))
+
     private static func drawPaw(in context: CGContext, toe: CGPoint, shoulder: CGPoint, mirror: Bool) {
         guard let pawImage else { return }
         context.saveGState()
@@ -192,6 +194,11 @@ enum CatArt {
         context.rotate(by: atan2(toe.x - shoulder.x, shoulder.y - toe.y))
         if mirror { context.scaleBy(x: -1, y: 1) }
         context.draw(pawImage, in: pawFrame)
+        let extra = min(10, max(0, hypot(toe.x - shoulder.x, shoulder.y - toe.y) - 40))
+        if extra > 0, let upperPaw {
+            context.draw(upperPaw, in: CGRect(x: pawFrame.minX, y: pawFrame.maxY - 18,
+                                              width: pawFrame.width, height: 18 + extra))
+        }
     }
 
     private static func drawMouse(in context: CGContext, at center: CGPoint, press: CGFloat) {

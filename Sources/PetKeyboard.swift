@@ -1,17 +1,29 @@
 import AppKit
+import Carbon
 import CoreText
 
-/// Compact, level keyboard in the pet's local, bottom-up coordinate system.
+/// The pet faces the viewer. A keyboard's bottom row therefore sits closest to
+/// the pet, and the pet's leftmost keys appear on the viewer's right.
 enum PetKeyboard {
-    private struct Cap {
+    private struct Key {
+        let code: Int?
         let legend: String
+        let units: CGFloat
+
+        init(_ code: Int?, _ legend: String, _ units: CGFloat = 1) {
+            self.code = code
+            self.legend = legend
+            self.units = units
+        }
+    }
+
+    private struct Cap {
+        let key: Key
         let frame: CGRect
-        let letter: Int?
-        let accent: Bool
         let line: CTLine
     }
 
-    private static let shell = CGRect(x: 95, y: 19, width: 130, height: 37)
+    private static let shell = CGRect(x: 95, y: 23.5, width: 130, height: 35.5)
     private static let bounds = shell.insetBy(dx: -1, dy: -1)
     private static let caseDark = color(0x37363A)
     private static let backplate = color(0x5D5A5B)
@@ -24,43 +36,93 @@ enum PetKeyboard {
     private static let activeEdge = color(0x7F9D55)
     private static let legendColor = color(0x514D4B)
 
+    // In the pet's reading order. The power key is visible, but macOS does
+    // not send it through the application's ordinary keyboard event stream.
+    private static let rows: [[Key]] = [
+        [Key(kVK_Escape, "esc", 1.3), Key(kVK_F1, "F1"), Key(kVK_F2, "F2"), Key(kVK_F3, "F3"),
+         Key(kVK_F4, "F4"), Key(kVK_F5, "F5"), Key(kVK_F6, "F6"), Key(kVK_F7, "F7"),
+         Key(kVK_F8, "F8"), Key(kVK_F9, "F9"), Key(kVK_F10, "F10"), Key(kVK_F11, "F11"),
+         Key(kVK_F12, "F12"), Key(nil, "⏻")],
+        [Key(kVK_ANSI_Grave, "`"), Key(kVK_ANSI_1, "1"), Key(kVK_ANSI_2, "2"), Key(kVK_ANSI_3, "3"),
+         Key(kVK_ANSI_4, "4"), Key(kVK_ANSI_5, "5"), Key(kVK_ANSI_6, "6"), Key(kVK_ANSI_7, "7"),
+         Key(kVK_ANSI_8, "8"), Key(kVK_ANSI_9, "9"), Key(kVK_ANSI_0, "0"), Key(kVK_ANSI_Minus, "-"),
+         Key(kVK_ANSI_Equal, "="), Key(kVK_Delete, "⌫", 1.5)],
+        [Key(kVK_Tab, "⇥", 1.5), Key(kVK_ANSI_Q, "Q"), Key(kVK_ANSI_W, "W"), Key(kVK_ANSI_E, "E"),
+         Key(kVK_ANSI_R, "R"), Key(kVK_ANSI_T, "T"), Key(kVK_ANSI_Y, "Y"), Key(kVK_ANSI_U, "U"),
+         Key(kVK_ANSI_I, "I"), Key(kVK_ANSI_O, "O"), Key(kVK_ANSI_P, "P"), Key(kVK_ANSI_LeftBracket, "["),
+         Key(kVK_ANSI_RightBracket, "]"), Key(kVK_ANSI_Backslash, "\\")],
+        [Key(kVK_CapsLock, "⇪", 1.75), Key(kVK_ANSI_A, "A"), Key(kVK_ANSI_S, "S"), Key(kVK_ANSI_D, "D"),
+         Key(kVK_ANSI_F, "F"), Key(kVK_ANSI_G, "G"), Key(kVK_ANSI_H, "H"), Key(kVK_ANSI_J, "J"),
+         Key(kVK_ANSI_K, "K"), Key(kVK_ANSI_L, "L"), Key(kVK_ANSI_Semicolon, ";"),
+         Key(kVK_ANSI_Quote, "'"), Key(kVK_Return, "↩", 1.75)],
+        [Key(kVK_Shift, "⇧", 2.15), Key(kVK_ANSI_Z, "Z"), Key(kVK_ANSI_X, "X"), Key(kVK_ANSI_C, "C"),
+         Key(kVK_ANSI_V, "V"), Key(kVK_ANSI_B, "B"), Key(kVK_ANSI_N, "N"), Key(kVK_ANSI_M, "M"),
+         Key(kVK_ANSI_Comma, ","), Key(kVK_ANSI_Period, "."), Key(kVK_ANSI_Slash, "/"),
+         Key(kVK_RightShift, "⇧", 2.35)],
+        [Key(kVK_Function, "fn"), Key(kVK_Control, "⌃"), Key(kVK_Option, "⌥"), Key(kVK_Command, "⌘", 1.25),
+         Key(kVK_Space, "", 5), Key(kVK_RightCommand, "⌘", 1.25), Key(kVK_RightOption, "⌥"),
+         Key(kVK_LeftArrow, "←"), Key(kVK_DownArrow, "↓"), Key(kVK_RightArrow, "→")]
+    ]
+
     private static let caps: [Cap] = {
-        typealias Spec = (legend: String, units: CGFloat)
-        func single(_ labels: String) -> [Spec] { labels.map { (String($0), 1) } }
-        let rows: [[Spec]] = [
-            [("⎋", 1)] + single("QWERTYUIOP") + [("⌫", 1.25)],
-            [("⇥", 1.25)] + single("ASDFGHJKL;") + [("↵", 1)],
-            [("⇧", 1.75)] + single("ZXCVBNM,./") + [("⇧", 1)],
-            [("⌃", 1), ("⌥", 1), ("⌘", 1.25), ("", 5), ("⌘", 1), ("←", 1), ("↓", 1), ("→", 1)]
-        ]
-        let font = NSFont.monospacedSystemFont(ofSize: 4.6, weight: .medium)
         var result: [Cap] = []
-        for (rowIndex, row) in rows.enumerated() {
-            let rowWidth = shell.width - 6
-            let gap: CGFloat = 0.85
-            let units = row.reduce(CGFloat.zero) { $0 + $1.units }
-            let unit = (rowWidth - CGFloat(row.count - 1) * gap) / units
-            var x = shell.midX - rowWidth / 2
-            for spec in row {
-                let w = unit * spec.units
-                let frame = CGRect(x: x, y: 46.5 - CGFloat(rowIndex) * 7.65, width: w, height: 6.9)
-                let ascii = spec.legend.utf8.first
-                let index = spec.legend.count == 1 ? ascii.flatMap { (65...90).contains($0) ? Int($0) - 65 : nil } : nil
-                let text = NSAttributedString(string: spec.legend, attributes: [
-                    .font: font, .foregroundColor: NSColor(cgColor: legendColor)!
-                ])
-                result.append(Cap(legend: spec.legend, frame: frame, letter: index,
-                                  accent: spec.legend == "⎋" || spec.legend == "↵",
-                                  line: CTLineCreateWithAttributedString(text)))
-                x += w + gap
+        let gap: CGFloat = 0.66
+        let rowGap: CGFloat = 0.56
+        let rowWidth = shell.width - 6
+        var y = shell.minY + 2.6
+        for (rowNumber, row) in rows.enumerated() {
+            let height: CGFloat = rowNumber == 0 ? 3.95 : 4.85
+            let totalUnits = row.reduce(CGFloat.zero) { $0 + $1.units }
+            let unit = (rowWidth - CGFloat(row.count - 1) * gap) / totalUnits
+            var x = shell.maxX - 3
+            for key in row {
+                let width = key.units * unit
+                x -= width
+                var rect = CGRect(x: x, y: y, width: width, height: height)
+                var fontSize: CGFloat = rowNumber == 0 ? 3.0 : 3.9
+                if [kVK_LeftArrow, kVK_DownArrow, kVK_RightArrow].contains(key.code ?? -1) {
+                    rect.size.height = (height - 0.42) / 2
+                    fontSize = 3.0
+                    if key.code == kVK_DownArrow {
+                        result.append(makeCap(Key(kVK_UpArrow, "↑"), in: rect, fontSize: fontSize))
+                    }
+                    rect.origin.y = y + height - rect.height
+                }
+                result.append(makeCap(key, in: rect, fontSize: fontSize))
+                x -= gap
             }
+            y += height + rowGap
         }
         return result
     }()
 
-    static func center(for key: Int) -> CGPoint? {
-        guard let cap = caps.first(where: { $0.letter == key }) else { return nil }
-        return CGPoint(x: cap.frame.midX, y: cap.frame.midY)
+    private static func makeCap(_ key: Key, in frame: CGRect, fontSize: CGFloat) -> Cap {
+        let text = NSAttributedString(string: key.legend, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .medium),
+            .foregroundColor: NSColor(cgColor: legendColor)!
+        ])
+        return Cap(key: key, frame: frame, line: CTLineCreateWithAttributedString(text))
+    }
+
+    private static let byCode = Dictionary(uniqueKeysWithValues: caps.compactMap { cap in
+        cap.key.code.map { ($0, cap) }
+    })
+
+    static func center(for code: Int) -> CGPoint? {
+        guard let rect = byCode[code]?.frame else { return nil }
+        return CGPoint(x: rect.midX, y: rect.midY)
+    }
+
+    static func usesScreenRightPaw(for code: Int?, rightHand: Bool) -> Bool {
+        guard let x = code.flatMap(center(for:))?.x else { return !rightHand }
+        return x >= shell.midX
+    }
+
+    // Demo notes have no hardware event. Real presses always use their Mac key code.
+    static func code(forDemoLabel label: String) -> Int? {
+        if label == "↵" { return kVK_Return }
+        if label == "空格" { return kVK_Space }
+        return caps.first { $0.key.legend == label }?.key.code
     }
 
     private static func color(_ value: UInt32) -> CGColor {
@@ -77,29 +139,31 @@ enum PetKeyboard {
 
     private static func drawCap(_ cap: Cap, in c: CGContext, pressed: Bool) {
         let rect = cap.frame
-        let inset: CGFloat = pressed ? 0.24 : 0.65
-        let edge = pressed ? activeEdge : (cap.accent ? ochreEdge : capEdge)
-        let base = cap.legend.isEmpty ? sage : ivory
-        let face = pressed ? active : (cap.accent ? ochre : base)
-        pill(c, rect, radius: 1.0, color: edge)
+        let accent = cap.key.code == kVK_Escape || cap.key.code == kVK_Return
+        let edge = pressed ? activeEdge : (accent ? ochreEdge : capEdge)
+        let face = pressed ? active : (accent ? ochre : cap.key.code == kVK_Space ? sage : ivory)
+        pill(c, rect, radius: 0.8, color: edge)
+        let inset: CGFloat = pressed ? 0.15 : 0.55
         let top = CGRect(x: rect.minX, y: rect.minY + inset, width: rect.width, height: rect.height - inset)
-        pill(c, top, radius: 0.86, color: face)
-        if !cap.legend.isEmpty {
-            c.textMatrix = .identity
-            let ink = CTLineGetBoundsWithOptions(cap.line, .useGlyphPathBounds)
-            c.textPosition = CGPoint(x: top.midX - ink.midX, y: top.midY - ink.midY)
-            CTLineDraw(cap.line, c)
-        }
+        pill(c, top, radius: 0.66, color: face)
+        guard !cap.key.legend.isEmpty else { return }
+        c.saveGState()
+        c.translateBy(x: top.midX, y: top.midY)
+        c.scaleBy(x: -1, y: -1)
+        c.textMatrix = .identity
+        let ink = CTLineGetBoundsWithOptions(cap.line, .useGlyphPathBounds)
+        c.textPosition = CGPoint(x: -ink.midX, y: -ink.midY)
+        CTLineDraw(cap.line, c)
+        c.restoreGState()
     }
 
     private static func drawResting(in c: CGContext) {
-        pill(c, shell, radius: 4.25, color: caseDark)
-        pill(c, CGRect(x: shell.minX + 1.4, y: shell.minY + 3, width: shell.width - 2.8, height: shell.height - 4.2),
-             radius: 3.1, color: backplate)
+        pill(c, shell, radius: 4.0, color: caseDark)
+        pill(c, CGRect(x: shell.minX + 1.4, y: shell.minY + 2.0, width: shell.width - 2.8, height: shell.height - 3.3),
+             radius: 3.0, color: backplate)
         for cap in caps { drawCap(cap, in: c, pressed: false) }
     }
 
-    // The resting keyboard is stationary. Only a pressed key needs repainting.
     private static let restingImage: CGImage? = {
         let scale: CGFloat = 3
         guard let c = CGContext(data: nil, width: Int(bounds.width * scale), height: Int(bounds.height * scale),
@@ -120,8 +184,6 @@ enum PetKeyboard {
         } else {
             drawResting(in: c)
         }
-        if let key = activeKey, let cap = caps.first(where: { $0.letter == key }) {
-            drawCap(cap, in: c, pressed: true)
-        }
+        if let key = activeKey, let cap = byCode[key] { drawCap(cap, in: c, pressed: true) }
     }
 }

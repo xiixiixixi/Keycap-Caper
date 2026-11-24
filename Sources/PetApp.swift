@@ -59,6 +59,7 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpPanel()
         setUpMenu()
+        updater.startAutomaticChecks()
 
         keyboard.onKey = { [weak self] label, index, rightPaw, keyCode in
             self?.showKey(label, index: index, rightPaw: rightPaw, keyCode: keyCode)
@@ -225,7 +226,7 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
     private func showKey(_ label: String, index: Int?, rightPaw: Bool, keyCode: Int? = nil) {
         guard panel.isVisible else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        view.press(label, keyIndex: index, rightPaw: rightPaw, at: now)
+        view.press(label, keyCode: keyCode, rightHand: rightPaw, at: now)
         if !defaults.bool(forKey: Setting.muted) { sound.play(label, index: index, keyCode: keyCode) }
     }
 

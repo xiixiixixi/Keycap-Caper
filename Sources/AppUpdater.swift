@@ -14,9 +14,16 @@ final class AppUpdater: NSObject, NSWindowDelegate {
     private var busy = false
     private var installing = false
     private var checkedChannel: URL?
+    private var automaticTimer: Timer?
+    private var checkingInBackground = false
+    private var lastOfferedBuild: Int?
 
     private var build: Int { Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0 }
     private var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—" }
+
+    private var installErrorReceipt: URL {
+        CaperRelease.localChannel.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("last-error.txt")
+    }
 
     private var channel: URL {
         let selection = UserDefaults.standard.string(forKey: sourceKey)
@@ -25,12 +32,32 @@ final class AppUpdater: NSObject, NSWindowDelegate {
         return officialChannel
     }
 
+    func startAutomaticChecks() {
+        guard automaticTimer == nil else { return }
+        let timer = Timer(timeInterval: 6 * 60 * 60, target: self, selector: #selector(checkInBackground),
+                          userInfo: nil, repeats: true)
+        timer.tolerance = 10 * 60
+        RunLoop.main.add(timer, forMode: .common)
+        automaticTimer = timer
+        checkInBackground()
+    }
+
+    @objc private func checkInBackground() {
+        guard !busy, window?.isVisible != true,
+              !FileManager.default.fileExists(atPath: installErrorReceipt.path) else { return }
+        check(inBackground: true)
+    }
+
     func show() {
         if window == nil { makeWindow() }
+        if checkingInBackground {
+            checkingInBackground = false
+            display(title: "正在检查更新…", detail: "正在读取发布说明并验证签名。", action: "检查中")
+        }
         window?.makeKeyAndOrderFront(nil)
         if #available(macOS 14, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
         guard !busy, release == nil else { return }
-        let receipt = CaperRelease.localChannel.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("last-error.txt")
+        let receipt = installErrorReceipt
         if let message = try? String(contentsOf: receipt, encoding: .utf8) {
             try? FileManager.default.removeItem(at: receipt)
             display(title: "上次安装未完成", detail: message, action: "重新检查")
@@ -151,20 +178,30 @@ final class AppUpdater: NSObject, NSWindowDelegate {
         else { check() }
     }
 
-    private func check() {
+    private func check(inBackground: Bool = false) {
         guard !busy else { return }
         busy = true
+        checkingInBackground = inBackground
         release = nil
         checkedChannel = nil
         progress.isIndeterminate = true
         let address = channel
-        refreshSourceLabel()
-        display(title: "正在检查更新…", detail: "正在读取发布说明并验证签名。", action: "检查中")
+        if !inBackground {
+            refreshSourceLabel()
+            display(title: "正在检查更新…", detail: "正在读取发布说明并验证签名。", action: "检查中")
+        }
         Task { [self] in
             do {
                 let latest = try await CaperUpdateFiles.check(channel: address)
                 busy = false
+                if checkingInBackground {
+                    checkingInBackground = false
+                    guard latest.build > build, latest.build != lastOfferedBuild else { return }
+                    if window == nil { makeWindow() }
+                    window?.orderFrontRegardless()
+                }
                 if latest.build > build {
+                    lastOfferedBuild = latest.build
                     release = latest
                     checkedChannel = address
                     display(title: "发现新版本 " + latest.version, detail: latest.notes, action: "安装并重新打开")
@@ -174,6 +211,10 @@ final class AppUpdater: NSObject, NSWindowDelegate {
                 }
             } catch {
                 busy = false
+                if checkingInBackground {
+                    checkingInBackground = false
+                    return
+                }
                 display(title: "暂时无法检查更新", detail: error.localizedDescription, action: "重新检查")
             }
         }

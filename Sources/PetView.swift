@@ -57,8 +57,9 @@ final class PetView: NSView {
         needsDisplay = true
     }
 
-    func press(_ label: String, keyIndex: Int?, rightPaw: Bool, at now: TimeInterval) {
-        if rightPaw {
+    func press(_ label: String, keyCode: Int?, rightHand: Bool, at now: TimeInterval) {
+        let keyIndex = keyCode ?? PetKeyboard.code(forDemoLabel: label)
+        if PetKeyboard.usesScreenRightPaw(for: keyIndex, rightHand: rightHand) {
             lastRightPress = now
             rightKey = keyIndex
         } else {
