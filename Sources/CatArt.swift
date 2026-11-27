@@ -42,6 +42,7 @@ enum CatArt {
         mouseReach: CGFloat = 0, mouseOffset: CGVector = .zero, mousePress: CGFloat = 0,
         wheel: MouseWheelMotion.Pose = .init(), character: PetCharacter = .cat, scene: DeskScene.Frame? = nil,
         affection: PetAffectionPose = .neutral, life: CGFloat = 0, typingWeight: CGFloat = 0,
+        tempo: TypingTempo.Pose = .init(),
         leftOrigin: CGPoint? = nil, rightOrigin: CGPoint? = nil,
         underPaws: ((CGContext) -> Void)? = nil
     ) {
@@ -53,19 +54,23 @@ enum CatArt {
 
         let reach = min(1, max(0, mouseReach))
         let rig = PortraitMotion(neck: PortraitMotion.neck(for: character), reach: reach, scene: scene,
-                                 affection: affection, life: life, weight: typingWeight)
+                                 affection: affection, life: life, weight: typingWeight, tempo: tempo)
         let glance = abs(wheel.travel) * reach * 0.24
         let mouseGaze = CGVector(dx: gaze.dx + (-0.7 - gaze.dx) * glance, dy: gaze.dy + (-0.85 - gaze.dy) * glance)
-        let gaze = scene?.gaze ?? affection.gaze ?? mouseGaze
-        let blink = max(blink, affection.blink)
+        // Both eyes lead the next stroke while the head follows the weight of the last one.
+        let intent = tempo.urgency
+        let typingGaze = CGVector(dx: mouseGaze.dx + (0.50 * tempo.lean - mouseGaze.dx) * intent,
+                                  dy: mouseGaze.dy + (-1 - mouseGaze.dy) * intent)
+        let gaze = scene?.gaze ?? affection.gaze ?? typingGaze
+        let blink = max(blink, affection.blink, min(1, 0.88 * tempo.rest + 0.28 * tempo.exhale))
         let portrait = CompanionPortrait.forCharacter(character)
         if let portrait {
-            portrait.drawBody(in: context, gaze: gaze, blink: blink, motion: rig)
+            portrait.drawBody(in: context, gaze: gaze, blink: blink, motion: rig, focus: intent, tired: tempo.rest)
         } else if let kittenSkin {
             kittenSkin.draw(in: context, motion: rig)
             context.saveGState()
             context.concatenate(rig.head)
-            drawEyes(in: context, gaze: gaze, blink: blink)
+            drawEyes(in: context, gaze: gaze, blink: blink, focus: intent)
             context.restoreGState()
         }
 
@@ -74,8 +79,13 @@ enum CatArt {
         let mouse = CGPoint(x: 83.5 + 0.35 * mouseOffset.dx, y: 55.5 + 0.50 * mouseOffset.dy)
         drawMouse(in: context, at: mouse, press: mousePress, turn: wheel.turn)
 
-        let left = keyContact(rest: affection.leftToe ?? CGPoint(x: 133, y: 51), key: leftKey, press: leftPress, origin: leftOrigin)
-        let right = scene?.rightToe ?? keyContact(rest: affection.rightToe ?? CGPoint(x: 182, y: 51), key: rightKey, press: rightPress, origin: rightOrigin)
+        var left = keyContact(rest: affection.leftToe ?? typingPerch(right: false, rest: tempo.rest),
+                              key: leftKey, press: leftPress, origin: leftOrigin)
+        var right = keyContact(rest: affection.rightToe ?? typingPerch(right: true, rest: tempo.rest),
+                               key: rightKey, press: rightPress, origin: rightOrigin)
+        left.y += typingLift(tempo.leftLift)
+        right.y += typingLift(tempo.rightLift)
+        right = scene?.rightToe ?? right
         let mouseToe = CGPoint(x: mouse.x + 0.5 + 2.7 * wheel.contact + 1.6 * wheel.lift,
                                y: mouse.y - 1 - mousePress * 1.9 + 0.8 * wheel.contact - 6.0 * wheel.travel + 2 * wheel.lift)
         let movingToe = scene?.leftToe ?? CGPoint(x: left.x + (mouseToe.x - left.x) * reach,
@@ -108,6 +118,14 @@ enum CatArt {
         scene?.drawForeground(in: context)
     }
 
+    static func typingLift(_ amount: CGFloat) -> CGFloat { 17 * amount }
+
+    static func typingPerch(right: Bool, rest: CGFloat) -> CGPoint {
+        // On the exhale the wrists turn out and settle on the near row.
+        CGPoint(x: right ? 182 + 5.5 * rest : 133 - 6.5 * rest,
+                y: 51 - (right ? 3.6 : 2.4) * rest)
+    }
+
     static func keyContact(rest: CGPoint, key: Int?, press: CGFloat, origin: CGPoint? = nil) -> CGPoint {
         let target = key.flatMap(PetKeyboard.center(for:)) ?? CGPoint(x: rest.x, y: rest.y - 10)
         let amount = min(1, max(0, press))
@@ -137,7 +155,7 @@ enum CatArt {
         return c.makeImage()
     }
 
-    private static func drawEyes(in context: CGContext, gaze: CGVector, blink: CGFloat) {
+    private static func drawEyes(in context: CGContext, gaze: CGVector, blink: CGFloat, focus: CGFloat) {
         context.saveGState()
         defer { context.restoreGState() }
         context.translateBy(x: kittenRect.minX, y: kittenRect.minY)
@@ -145,6 +163,7 @@ enum CatArt {
         let xOffset = min(max(gaze.dx, -1), 1) * 37
         let yOffset = min(max(gaze.dy, -1), 1) * 27
         let blinkAmount = min(max(blink, 0), 1)
+        let lidAmount = max(blinkAmount, focus * 0.46)
 
         for (i, x) in eyes.enumerated() {
             let y: CGFloat = 733
@@ -157,15 +176,25 @@ enum CatArt {
             context.saveGState()
             context.addPath(eye)
             context.clip()
-            drawPupil(in: context, x: x + xOffset, y: y + yOffset)
+            let pupilX = x + xOffset
+            context.saveGState()
+            if focus > 0 {
+                context.translateBy(x: pupilX, y: 0)
+                context.scaleBy(x: 1 - 0.25 * focus, y: 1)
+                context.translateBy(x: -pupilX, y: 0)
+            }
+            drawPupil(in: context, x: pupilX, y: y + yOffset)
+            context.restoreGState()
 
-            if blinkAmount > 0.03 {
-                let closed = min(1, blinkAmount / 0.94)
+            if lidAmount > 0.03 {
+                let closed = min(1, lidAmount / 0.94)
+                // The inner corner of each upper lid bears down toward the nose.
+                let inward = (i == 0 ? 1.0 : -1.0) * focus * (1 - blinkAmount) * 75
                 let upperY = y + 128 - 154 * closed
                 let lowerY = y - 114 + 92 * closed
                 let lid = CGMutablePath()
-                lid.move(to: CGPoint(x: x - 125, y: upperY))
-                lid.addQuadCurve(to: CGPoint(x: x + 125, y: upperY), control: CGPoint(x: x, y: upperY - 22))
+                lid.move(to: CGPoint(x: x - 125, y: upperY + inward))
+                lid.addQuadCurve(to: CGPoint(x: x + 125, y: upperY - inward), control: CGPoint(x: x, y: upperY - 22))
                 lid.addLine(to: CGPoint(x: x + 125, y: y + 125))
                 lid.addLine(to: CGPoint(x: x - 125, y: y + 125)); lid.closeSubpath()
                 lid.move(to: CGPoint(x: x - 125, y: lowerY))
@@ -181,8 +210,8 @@ enum CatArt {
                 }
                 context.restoreGState()
                 let crease = CGMutablePath()
-                crease.move(to: CGPoint(x: x - 123, y: upperY + 1))
-                crease.addQuadCurve(to: CGPoint(x: x + 123, y: upperY + 1), control: CGPoint(x: x, y: upperY - 21))
+                crease.move(to: CGPoint(x: x - 123, y: upperY + 1 + inward))
+                crease.addQuadCurve(to: CGPoint(x: x + 123, y: upperY + 1 - inward), control: CGPoint(x: x, y: upperY - 21))
                 stroke(crease, with: color(0x241C1C).copy(alpha: 0.86 * closed)!, width: 7, in: context)
             }
             context.restoreGState()

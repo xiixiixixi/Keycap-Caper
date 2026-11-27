@@ -10,19 +10,23 @@ struct PortraitMotion {
     private let expansion: CGFloat
 
     init(neck: CGFloat, reach: CGFloat = 0, scene: DeskScene.Frame? = nil,
-         affection: PetAffectionPose = .neutral, life: CGFloat = 0, weight: CGFloat = 0) {
+         affection: PetAffectionPose = .neutral, life: CGFloat = 0, weight: CGFloat = 0,
+         tempo: TypingTempo.Pose = .init()) {
         self.neck = neck
-        let lean = (scene?.lean ?? 0) - 15 * reach
-        let lift = scene?.bodyLift ?? 0
+        // A rush braces the shoulders and drives the head down on contact.
+        // The tired head lolls to one side as the chest lets out its breath.
+        let lean = (scene?.lean ?? 0) - 15 * reach + 3.1 * tempo.lean - 3.5 * tempo.rest
+        let lift = (scene?.bodyLift ?? 0) - 6.8 * tempo.urgency - 3.0 * tempo.impact - 8.8 * tempo.rest - 1.8 * tempo.exhale
         let tilt = affection.tilt + (scene?.headTilt ?? 0) + 0.043 * reach - 0.013 * weight
+            - 0.043 * tempo.lean + 0.115 * tempo.rest
         let pivot = CGPoint(x: 160, y: neck - 13)
         head = CGAffineTransform(translationX: pivot.x + lean + 0.9 * weight - affection.tilt * 21,
                                  y: pivot.y + lift + affection.lift * 0.74 + 0.48 * life - abs(weight) * 0.8)
             .rotated(by: tilt)
             .translatedBy(x: -pivot.x, y: -pivot.y)
         chestX = 0.33 * lean + 1.45 * weight
-        chestY = 0.26 * lift - 0.72 * abs(weight) + life * 0.38
-        expansion = life * 0.008
+        chestY = 0.26 * lift - 0.72 * abs(weight) + life * 0.38 + 4.9 * tempo.urgency - 1.8 * tempo.exhale
+        expansion = life * 0.008 + 0.035 * tempo.urgency - 0.024 * tempo.exhale
     }
 
     static func neck(for character: PetCharacter) -> CGFloat {

@@ -62,8 +62,8 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
         setUpMenu()
         updater.startAutomaticChecks()
 
-        keyboard.onKey = { [weak self] label, index, rightPaw, keyCode in
-            self?.showKey(label, index: index, rightPaw: rightPaw, keyCode: keyCode)
+        keyboard.onKey = { [weak self] label, index, rightPaw, keyCode, typingStroke in
+            self?.showKey(label, index: index, rightPaw: rightPaw, keyCode: keyCode, typingStroke: typingStroke)
         }
         keyboard.onRhythmInput = { [weak self] eligible in
             guard let self, self.panel.isVisible else { return }
@@ -247,11 +247,11 @@ final class PetApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDel
         }
     }
 
-    private func showKey(_ label: String, index: Int?, rightPaw: Bool, keyCode: Int? = nil) {
+    private func showKey(_ label: String, index: Int?, rightPaw: Bool, keyCode: Int? = nil, typingStroke: Bool = false) {
         guard panel.isVisible else { return }
         let now = ProcessInfo.processInfo.systemUptime
         view.press(label, keyCode: keyCode, rightHand: rightPaw, at: now,
-                   physical: keyCode != nil, mahjong: sound.style == .mahjong)
+                   physical: keyCode != nil, mahjong: sound.style == .mahjong, typingStroke: typingStroke)
         if !defaults.bool(forKey: Setting.muted) { sound.play(label, index: index, keyCode: keyCode) }
     }
 

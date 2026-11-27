@@ -30,6 +30,8 @@ final class PetView: NSView {
     private let deskScene = DeskScene()
     private let affection = PetAffection()
     private var echo = RhythmEcho()
+    private var tempo = TypingTempo()
+    private var sampledTempo = TypingTempo.Pose()
     private var previewActor: PetCharacter?
     private var actor: PetCharacter { previewActor ?? character }
     var onEchoTap: ((String, Int, Float) -> Void)?
@@ -42,6 +44,8 @@ final class PetView: NSView {
     private var keyIndex: Int?
     private var leftKey: Int?
     private var rightKey: Int?
+    private var leftSpeed: CGFloat = 0
+    private var rightSpeed: CGFloat = 0
     private var leftStart = CGPoint(x: 133, y: 51)
     private var rightStart = CGPoint(x: 182, y: 51)
     private var lastBreathSample = -TimeInterval.infinity
@@ -96,7 +100,7 @@ final class PetView: NSView {
     }
 
     func press(_ label: String, keyCode: Int?, rightHand: Bool, at now: TimeInterval,
-               physical: Bool = false, mahjong: Bool = false) {
+               physical: Bool = false, mahjong: Bool = false, typingStroke: Bool = false) {
         let code = keyCode ?? PetKeyboard.code(forDemoLabel: label)
         if physical {
             slipLookUntil = 0
@@ -104,24 +108,38 @@ final class PetView: NSView {
             let canDeal = mahjong && !moving && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
             deskScene.keyDown(isReturn: code == 36 || code == 76, mahjong: canDeal, at: now)
         }
-        tapPaw(keyIndex: code, rightHand: rightHand, at: now)
+        let canHurry = typingStroke && !moving && combo == nil && deskScene.frame(at: now) == nil
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        tapPaw(keyIndex: code, rightHand: rightHand, at: now, countsTowardTempo: canHurry)
+        let catchingBreath = tempo.takesPriority(at: now)
+        if catchingBreath {
+            echo.cancel()
+            if affection.isActive { affection.reset() }
+        }
         if showsBubbles {
             bubbles.removeAll { $0.lane == nextLane }
-            let taken = physical && !moving && combo == nil && deskScene.frame(at: now) == nil &&
+            let taken = physical && !catchingBreath && !moving && combo == nil && deskScene.frame(at: now) == nil &&
                 affection.offerBubble(label: label, lane: nextLane, character: actor, at: now)
             if !taken { bubbles.append(Bubble(label: label, lane: nextLane, born: now)) }
             nextLane = (nextLane + 1) % 4
         }
     }
 
-    private func tapPaw(keyIndex: Int?, rightHand: Bool, at now: TimeInterval) {
-        if PetKeyboard.usesScreenRightPaw(for: keyIndex, rightHand: rightHand) {
-            rightStart = strokePoint(right: true, at: now)
+    private func tapPaw(keyIndex: Int?, rightHand: Bool, at now: TimeInterval, countsTowardTempo: Bool = false) {
+        let right = PetKeyboard.usesScreenRightPaw(for: keyIndex, rightHand: rightHand)
+        let origin = strokePoint(right: right, at: now)
+        if countsTowardTempo { tempo.strike(right: right, at: now) }
+        else { tempo.releasePaw(right: right, at: now) }
+        let speed = tempo.pose(at: now).urgency
+        if right {
+            rightStart = origin
+            rightSpeed = speed
             lastRightPress = now
             rightKey = keyIndex
         } else {
             wheel = MouseWheelMotion()
-            leftStart = strokePoint(right: false, at: now)
+            leftStart = origin
+            leftSpeed = speed
             lastLeftPress = now
             leftKey = keyIndex
         }
@@ -150,6 +168,9 @@ final class PetView: NSView {
     }
 
     private func resetPlay() {
+        tempo = TypingTempo()
+        leftSpeed = 0
+        rightSpeed = 0
         wheel = MouseWheelMotion()
         deskScene.reset()
         affection.reset()
@@ -168,6 +189,7 @@ final class PetView: NSView {
     func scroll(down: CGFloat, at now: TimeInterval) {
         guard !moving, combo == nil, down.isFinite, abs(down) > 0.01,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        tempo = TypingTempo()
         deskScene.scroll(down: down, character: actor, at: now)
         if deskScene.frame(at: now)?.leftToe == nil {
             wheel.scroll(down: down, at: now)
@@ -226,6 +248,7 @@ final class PetView: NSView {
             previewActor = nil
             needsDisplay = true
         }
+        if tempo.takesPriority(at: now) { return }
         if affection.update(cursor: cursor, eyeCenter: eyes, character: actor, at: now, reducedMotion: reduced) {
             needsDisplay = true
         }
@@ -286,6 +309,12 @@ final class PetView: NSView {
             }
         }
 
+        let currentTempo = allowPlay && !reducedMotion ? tempo.pose(at: now) : .init()
+        if currentTempo != sampledTempo {
+            sampledTempo = currentTempo
+            needsDisplay = true
+        }
+
         let hadBubbles = !bubbles.isEmpty
         bubbles.removeAll { now - $0.born >= 0.82 }
         if now - lastKeyPress >= 0.15 { keyIndex = nil }
@@ -326,6 +355,7 @@ final class PetView: NSView {
         let usingMouse = !moving && !typingWithMousePaw && (now - lastMouseAction < 0.48 || holding)
         if !usingMouse { mouseTarget = .zero }
 
+        if usingMouse && lastMouseAction > lastKeyPress { tempo = TypingTempo() }
         let reachSpeed: CGFloat = rolling ? 0.73 : 0.42
         let reach = approach(mouseReach, toward: usingMouse ? 1 : 0, fraction: usingMouse ? reachSpeed : 0.28)
         let click = approach(mousePress, toward: usingMouse && (clicking || holding) ? 1 : 0, fraction: 0.6)
@@ -353,22 +383,24 @@ final class PetView: NSView {
         let leftAge = now - lastLeftPress
         let rightAge = now - lastRightPress
         let pose = affection.pose(at: now)
-        let weight = reducedMotion ? 0 : pawAmount(rightAge - 0.012) - pawAmount(leftAge - 0.012)
+        let scene = deskScene.frame(at: now)
+        let performance = reducedMotion || scene != nil || combo != nil ? TypingTempo.Pose() : tempo.pose(at: now)
+        let weight = reducedMotion ? 0 : pawAmount(rightAge - 0.012, speed: rightSpeed) - pawAmount(leftAge - 0.012, speed: leftSpeed)
         CatArt.draw(
             in: context,
             gaze: now < slipLookUntil ? slipGaze : gaze,
             blink: blink,
-            leftPress: pawAmount(leftAge),
-            rightPress: pawAmount(rightAge),
+            leftPress: pawAmount(leftAge, speed: leftSpeed),
+            rightPress: pawAmount(rightAge, speed: rightSpeed),
             keyIndex: now - lastKeyPress < 0.15 ? keyIndex : nil,
             leftKey: leftKey,
             rightKey: rightKey,
             mouseReach: mouseReach,
             mouseOffset: mouseOffset,
             mousePress: mousePress, wheel: reducedMotion ? .init() : wheel.pose(at: now),
-            character: actor, scene: deskScene.frame(at: now), affection: pose, life: breath, typingWeight: weight,
-            leftOrigin: leftAge < Self.downstroke ? leftStart : nil,
-            rightOrigin: rightAge < Self.downstroke ? rightStart : nil,
+            character: actor, scene: scene, affection: pose, life: breath, typingWeight: weight, tempo: performance,
+            leftOrigin: leftAge < downstroke(speed: leftSpeed) ? leftStart : nil,
+            rightOrigin: rightAge < downstroke(speed: rightSpeed) ? rightStart : nil,
             underPaws: { self.affection.drawBubble(in: $0, at: now, mouseReach: self.mouseReach, layer: .beforePaws) }
         )
         for bubble in bubbles {
@@ -395,22 +427,26 @@ final class PetView: NSView {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { moving }
 
-    private static let downstroke: TimeInterval = 0.035
+    private func downstroke(speed: CGFloat) -> TimeInterval { 0.035 - 0.012 * speed }
 
-    private func pawAmount(_ age: TimeInterval) -> CGFloat {
-        guard age >= 0, age < 0.22 else { return 0 }
-        let phase = age < Self.downstroke ? age / Self.downstroke : min(1, (0.22 - age) / 0.154)
+    private func pawAmount(_ age: TimeInterval, speed: CGFloat) -> CGFloat {
+        let end = 0.22 - 0.095 * speed
+        guard age >= 0, age < end else { return 0 }
+        let down = downstroke(speed: speed)
+        let release = 0.154 - 0.084 * speed
+        let phase = age < down ? age / down : min(1, (end - age) / release)
         return CGFloat(phase * phase * (3 - 2 * phase))
     }
 
-    // A second key can arrive before the first paw has lifted. Begin the new
-    // stroke where the toes actually are, then let them return to their perch.
+    // Fast consecutive strokes begin at the visible fingertip, including its rebound.
     private func strokePoint(right: Bool, at now: TimeInterval) -> CGPoint {
-        let rest = CGPoint(x: right ? 182 : 133, y: 51)
+        let performance = reducedMotion ? TypingTempo.Pose() : tempo.pose(at: now)
+        let perch = CatArt.typingPerch(right: right, rest: performance.rest)
+        let speed = right ? rightSpeed : leftSpeed
         let age = now - (right ? lastRightPress : lastLeftPress)
-        guard age < 0.22 else { return rest }
-        let start = age < Self.downstroke ? (right ? rightStart : leftStart) : nil
-        return CatArt.keyContact(rest: rest, key: right ? rightKey : leftKey, press: pawAmount(age), origin: start)
+        let start = age < downstroke(speed: speed) ? (right ? rightStart : leftStart) : nil
+        var point = CatArt.keyContact(rest: perch, key: right ? rightKey : leftKey, press: pawAmount(age, speed: speed), origin: start)
+        point.y += CatArt.typingLift(right ? performance.rightLift : performance.leftLift)
+        return point
     }
-
 }

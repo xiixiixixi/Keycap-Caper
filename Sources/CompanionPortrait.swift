@@ -85,11 +85,13 @@ final class CompanionPortrait {
                             y: frame.maxY - midpoint.y * targetScale)
     }
 
-    func drawBody(in c: CGContext, gaze: CGVector, blink: CGFloat, motion: PortraitMotion) {
+    func drawBody(in c: CGContext, gaze: CGVector, blink: CGFloat, motion: PortraitMotion, focus: CGFloat = 0, tired: CGFloat = 0) {
         skin.draw(in: c, motion: motion)
         c.saveGState()
         c.concatenate(motion.head)
-        for eye in eyes { eye.draw(in: c, gaze: gaze, blink: blink) }
+        for (i, eye) in eyes.enumerated() {
+            eye.draw(in: c, gaze: gaze, blink: blink, inwardFocus: i == 0 ? focus : -focus, tired: tired)
+        }
         c.restoreGState()
     }
 
@@ -201,6 +203,7 @@ private final class PortraitEye {
     private var lastX = Int.min
     private var lastY = Int.min
     private var lastBlink = Int.min
+    private var lastFocus = Int.min
     private var lastImage: CGImage?
 
     init?(image: CGImage, eyelid: CGImage, frame: CGRect, separatePupil: Bool) {
@@ -226,18 +229,21 @@ private final class PortraitEye {
         canvas.clear(tile)
     }
 
-    func draw(in c: CGContext, gaze: CGVector, blink: CGFloat) {
+    func draw(in c: CGContext, gaze: CGVector, blink: CGFloat, inwardFocus: CGFloat, tired: CGFloat) {
         let hx = Int((min(1, max(-1, gaze.dx)) * 24).rounded())
         let vy = Int((min(1, max(-1, gaze.dy)) * 24).rounded())
+        let focus = Int((inwardFocus * 12).rounded())
         let closed = Int((min(1, max(0, blink)) * 24).rounded())
-        if !separatePupil && hx == 0 && vy == 0 && closed == 0 { return }
-        if hx != lastX || vy != lastY || closed != lastBlink {
+        if !separatePupil && hx == 0 && vy == 0 && closed == 0 && focus == 0 { return }
+        if hx != lastX || vy != lastY || closed != lastBlink || focus != lastFocus {
             lastImage = nil
             let rx = Double(width) / 2
             let ry = Double(height) / 2
             let shiftX = Double(hx) / 24 * rx * 0.32
             let shiftY = -Double(vy) / 24 * ry * 0.21
             let blink = Double(closed) / 24
+            let brow = Double(focus) / 12 * (1 - blink)
+            let pupilWidth = 0.32 * (1 - abs(inwardFocus) * 0.31)
             let direction = Double(hx) / 24
             let pupilX = -0.24 + direction * (direction > 0 ? 0.69 : 0.18)
             let pupilY = 0.045 - Double(vy) / 24 * 0.22 + pupilX * 0.16
@@ -251,7 +257,7 @@ private final class PortraitEye {
                     guard alpha > 0, original[destination + 3] >= 240 else { continue }
                     let falloff = alpha * alpha
                     if separatePupil {
-                        paintFeltPupil(at: destination, u: u - pupilX, v: v - pupilY)
+                        paintFeltPupil(at: destination, u: u - pupilX, v: v - pupilY, width: pupilWidth)
                     } else {
                         sample(x: Double(x) - shiftX * falloff, y: Double(y) - shiftY * falloff, to: destination)
                     }
@@ -259,12 +265,14 @@ private final class PortraitEye {
                         for channel in 0..<4 { output[destination + channel] = 0 }
                         continue
                     }
-                    if closed > 0 {
+                    if closed > 0 || focus != 0 {
                         // A curved upper and lower eyelid are painted with forehead
                         // fibers from the same animal. Their soft edges meet in a seam.
                         let h = sqrt(max(0, 1 - u*u))
                         let seam = 0.22 * h - 0.22 * u*u
-                        let top = -h + (h + seam) * blink
+                        // During a burst the inside brow descends first, while the
+                        // lower lid stays open and the pupil keeps tracking the keys.
+                        let top = -h + (h + seam) * blink + h * (0.80 * abs(brow) + 0.73 * brow * u)
                         let bottom = h + (seam - h) * blink
                         let coverage = separatePupil && closed == 24 ? 1 : min(1, max(0, max(top - v, v - bottom) * 28 + 0.5))
                         let feather = min(1, alpha * 5) * coverage
@@ -282,22 +290,38 @@ private final class PortraitEye {
             lastX = hx
             lastY = vy
             lastBlink = closed
+            lastFocus = focus
         }
         if let lastImage {
             c.saveGState()
             c.setBlendMode(.sourceAtop)
             c.draw(lastImage, in: frame)
+            if separatePupil, tired > 0, blink > 0.77 {
+                // The dark felt needs a tapered crease once its bright iris disappears.
+                let w = frame.width, h = frame.height
+                let y = frame.midY - h * 0.075
+                let crease = CGMutablePath()
+                crease.move(to: CGPoint(x: frame.midX - w * 0.32, y: y + h * 0.033))
+                crease.addQuadCurve(to: CGPoint(x: frame.midX + w * 0.31, y: y + h * 0.039),
+                                    control: CGPoint(x: frame.midX, y: y - h * 0.19))
+                crease.addQuadCurve(to: CGPoint(x: frame.midX - w * 0.32, y: y + h * 0.033),
+                                    control: CGPoint(x: frame.midX, y: y - h * 0.08))
+                crease.closeSubpath()
+                c.setFillColor(CGColor(gray: 0.042, alpha: tired * min(1, (blink - 0.77) / 0.18)))
+                c.addPath(crease)
+                c.fillPath()
+            }
             c.restoreGState()
         }
     }
 
     // Rascal's lime eye sockets are unpainted. Their actual wool colour masks the
     // moving pupil so both slanted eyelids occlude it even at the ends of a glance.
-    private func paintFeltPupil(at i: Int, u: Double, v: Double) {
+    private func paintFeltPupil(at i: Int, u: Double, v: Double, width pupilWidth: Double) {
         for k in 0..<4 { output[i + k] = original[i + k] }
         let green = Double(original[i + 1])
         let socket = min(1, max(0, (green - Double(original[i + 2]) - 10) / 28))
-        let x = u / 0.32, y = v / 0.62
+        let x = u / pupilWidth, y = v / 0.62
         let coverage = min(1, max(0, (1 - x*x - y*y) * Double(width) * 0.14)) * socket
         guard coverage > 0 else { return }
         let hx = (x + 0.12) / 0.23, hy = (y + 0.27) / 0.19

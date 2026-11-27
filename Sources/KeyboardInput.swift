@@ -4,7 +4,7 @@ import CoreGraphics
 import IOKit.hidsystem
 
 final class KeyboardInput {
-    var onKey: ((String, Int?, Bool, Int) -> Void)?
+    var onKey: ((String, Int?, Bool, Int, Bool) -> Void)?
     var onCombo: ((ComboTrick) -> Void)?
     var onRhythmInput: ((Bool) -> Void)?
     var onScroll: ((CGFloat) -> Void)?
@@ -99,7 +99,7 @@ final class KeyboardInput {
             // Modifier flags describe this event even if a quick release is already queued.
             guard let modifier = Self.modifiers[keyCode],
                   event.flags.rawValue & UInt64(modifier.mask) != 0 else { return }
-            onKey?(modifier.label, nil, Self.rightHandKeys.contains(keyCode), keyCode)
+            onKey?(modifier.label, nil, Self.rightHandKeys.contains(keyCode), keyCode, false)
             return
         }
 
@@ -111,11 +111,17 @@ final class KeyboardInput {
         let chordFlags: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift, .maskSecondaryFn]
         let isTypingKey = physicalKey != nil || keyCode == kVK_Space
         onRhythmInput?(isTypingKey && event.flags.intersection(chordFlags).isEmpty)
-        let label = Self.specialKeys[keyCode] ?? Self.printableLabel(event) ?? physicalKey ?? "键"
+        let special = Self.specialKeys[keyCode]
+        let glyph = special == nil ? Self.printableLabel(event) : nil
+        let label = special ?? glyph ?? physicalKey ?? "键"
         let letterIndex = physicalKey?.utf8.first.flatMap { byte in
             (65...90).contains(byte) ? Int(byte) - 65 : nil
         }
-        onKey?(label, letterIndex, Self.rightHandKeys.contains(keyCode), keyCode)
+        let shortcut: CGEventFlags = [.maskCommand, .maskControl, .maskSecondaryFn]
+        let countsAsTyping = isTypingKey || [kVK_Return, kVK_Delete, kVK_ForwardDelete, kVK_Tab, kVK_ANSI_KeypadEnter].contains(keyCode)
+            || glyph != nil
+        onKey?(label, letterIndex, Self.rightHandKeys.contains(keyCode), keyCode,
+               countsAsTyping && event.flags.intersection(shortcut).isEmpty)
         if let trick = ComboTrick.match(label: label, physicalKey: physicalKey, flags: event.flags) {
             onCombo?(trick)
         }
