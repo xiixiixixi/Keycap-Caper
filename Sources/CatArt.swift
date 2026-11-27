@@ -40,7 +40,7 @@ enum CatArt {
         leftPress: CGFloat, rightPress: CGFloat, keyIndex: Int?,
         leftKey: Int? = nil, rightKey: Int? = nil,
         mouseReach: CGFloat = 0, mouseOffset: CGVector = .zero, mousePress: CGFloat = 0,
-        character: PetCharacter = .cat, scene: DeskScene.Frame? = nil,
+        wheel: MouseWheelMotion.Pose = .init(), character: PetCharacter = .cat, scene: DeskScene.Frame? = nil,
         affection: PetAffectionPose = .neutral, life: CGFloat = 0, typingWeight: CGFloat = 0,
         leftOrigin: CGPoint? = nil, rightOrigin: CGPoint? = nil,
         underPaws: ((CGContext) -> Void)? = nil
@@ -54,7 +54,9 @@ enum CatArt {
         let reach = min(1, max(0, mouseReach))
         let rig = PortraitMotion(neck: PortraitMotion.neck(for: character), reach: reach, scene: scene,
                                  affection: affection, life: life, weight: typingWeight)
-        let gaze = scene?.gaze ?? affection.gaze ?? gaze
+        let glance = abs(wheel.travel) * reach * 0.24
+        let mouseGaze = CGVector(dx: gaze.dx + (-0.7 - gaze.dx) * glance, dy: gaze.dy + (-0.85 - gaze.dy) * glance)
+        let gaze = scene?.gaze ?? affection.gaze ?? mouseGaze
         let blink = max(blink, affection.blink)
         let portrait = CompanionPortrait.forCharacter(character)
         if let portrait {
@@ -70,11 +72,12 @@ enum CatArt {
         let pressure = keyIndex == leftKey ? leftPress : rightPress
         PetKeyboard.draw(in: context, activeKey: keyIndex, hiddenKey: scene?.hiddenKey, pressure: pressure)
         let mouse = CGPoint(x: 83.5 + 0.35 * mouseOffset.dx, y: 55.5 + 0.50 * mouseOffset.dy)
-        drawMouse(in: context, at: mouse, press: mousePress)
+        drawMouse(in: context, at: mouse, press: mousePress, turn: wheel.turn)
 
         let left = keyContact(rest: affection.leftToe ?? CGPoint(x: 133, y: 51), key: leftKey, press: leftPress, origin: leftOrigin)
         let right = scene?.rightToe ?? keyContact(rest: affection.rightToe ?? CGPoint(x: 182, y: 51), key: rightKey, press: rightPress, origin: rightOrigin)
-        let mouseToe = CGPoint(x: mouse.x + 0.5, y: mouse.y - 1 - mousePress * 1.9)
+        let mouseToe = CGPoint(x: mouse.x + 0.5 + 2.7 * wheel.contact + 1.6 * wheel.lift,
+                               y: mouse.y - 1 - mousePress * 1.9 + 0.8 * wheel.contact - 6.0 * wheel.travel + 2 * wheel.lift)
         let movingToe = scene?.leftToe ?? CGPoint(x: left.x + (mouseToe.x - left.x) * reach,
                                 y: left.y + (mouseToe.y - left.y) * reach + sin(.pi * reach) * 5)
         for tip in [right, movingToe] where tip.y < 63 {
@@ -93,6 +96,7 @@ enum CatArt {
             kittenLimb?.draw(in: context, shoulder: rightShoulder, toe: right, side: 1, grip: 0, gripImage: nil, hoof: false)
             kittenLimb?.draw(in: context, shoulder: leftShoulder, toe: movingToe, side: -1, grip: 0, gripImage: nil, hoof: false)
         }
+        scene?.drawForeground(in: context)
     }
 
     static func keyContact(rest: CGPoint, key: Int?, press: CGFloat, origin: CGPoint? = nil) -> CGPoint {
@@ -253,7 +257,7 @@ enum CatArt {
         return PortraitLimb(fur: coat, straightPaw: pawImage)
     }()
 
-    private static func drawMouse(in context: CGContext, at center: CGPoint, press: CGFloat) {
+    private static func drawMouse(in context: CGContext, at center: CGPoint, press: CGFloat, turn: CGFloat) {
         context.saveGState()
         defer { context.restoreGState() }
         context.translateBy(x: center.x, y: center.y)
@@ -271,11 +275,18 @@ enum CatArt {
                  minY: shell.minY - 1, maxY: shell.midY + 3.0, in: context)
         let buttonSeam = shape(0, shell.maxY - 0.8) { $0.line(0, 0.8 - press) }
         stroke(buttonSeam, with: CGColor(gray: 0.43, alpha: 0.40), width: 0.50, in: context)
-        let wheel = CGPath(roundedRect: CGRect(x: -1.15, y: 2 - press, width: 2.3, height: 5.5),
-                           cornerWidth: 1.1, cornerHeight: 1.1, transform: nil)
-        context.setFillColor(CGColor(srgbRed: 0.55, green: 0.57, blue: 0.51, alpha: 1))
+        let tread = CGRect(x: -1.6, y: 1.4 - press, width: 3.2, height: 6.7)
+        let wheel = CGPath(roundedRect: tread, cornerWidth: 1.4, cornerHeight: 1.4, transform: nil)
+        gradient(wheel, top: color(0x74766B), bottom: color(0x999B8C), minY: tread.minY, maxY: tread.maxY, in: context)
         context.addPath(wheel)
-        context.fillPath()
+        context.clip()
+        let pitch: CGFloat = 2.4
+        let shift = (turn - floor(turn)) * pitch
+        context.setFillColor(color(0xC6C8B7))
+        for index in 0...4 {
+            context.fill(CGRect(x: tread.minX + 0.3, y: tread.minY + CGFloat(index) * pitch - shift,
+                                width: tread.width - 0.6, height: 0.68))
+        }
     }
 
     private static func color(_ hex: UInt32) -> CGColor {

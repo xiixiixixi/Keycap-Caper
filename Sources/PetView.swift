@@ -1,13 +1,15 @@
 import AppKit
 
 enum PetPlay: String, CaseIterable {
-    case theft, echo, fishing, petting, bubble, mahjong
+    case theft, echo, fishing, stash, yarn, petting, bubble, mahjong
 
     var title: String {
         switch self {
         case .theft: return "小浣熊偷键帽"
         case .echo: return "学我的节奏"
         case .fishing: return "水獭滚轮钓鱼"
+        case .stash: return "坏猫藏键帽"
+        case .yarn: return "小黑猫滚毛线团"
         case .petting: return "摸摸搭档的头"
         case .bubble: return "接住按键气泡"
         case .mahjong: return "麻将轴自摸"
@@ -55,6 +57,7 @@ final class PetView: NSView {
     private var mouseOffset = CGVector.zero
     private var mouseTarget = CGVector.zero
     private var mousePress: CGFloat = 0
+    private var wheel = MouseWheelMotion()
 
     var character: PetCharacter = .cat {
         didSet {
@@ -116,6 +119,7 @@ final class PetView: NSView {
             lastRightPress = now
             rightKey = keyIndex
         } else {
+            wheel = MouseWheelMotion()
             leftStart = strokePoint(right: false, at: now)
             lastLeftPress = now
             leftKey = keyIndex
@@ -145,6 +149,7 @@ final class PetView: NSView {
     }
 
     private func resetPlay() {
+        wheel = MouseWheelMotion()
         deskScene.reset()
         affection.reset()
         echo.cancel()
@@ -160,12 +165,16 @@ final class PetView: NSView {
     }
 
     func scroll(down: CGFloat, at now: TimeInterval) {
-        guard !moving, combo == nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        guard !moving, combo == nil, down.isFinite, abs(down) > 0.01,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         deskScene.scroll(down: down, character: actor, at: now)
-        if deskScene.frame(at: now) != nil {
-            echo.cancel()
-            needsDisplay = true
+        if deskScene.frame(at: now)?.leftToe == nil {
+            wheel.scroll(down: down, at: now)
+        } else {
+            wheel = MouseWheelMotion()
         }
+        echo.cancel()
+        needsDisplay = true
     }
 
     func preview(_ play: PetPlay, at now: TimeInterval) {
@@ -177,6 +186,12 @@ final class PetView: NSView {
         case .fishing:
             previewActor = .otter
             deskScene.preview(.fishing, at: now)
+        case .stash:
+            previewActor = .rascal
+            deskScene.preview(.stash, at: now)
+        case .yarn:
+            previewActor = .cat
+            deskScene.preview(.yarn, at: now)
         case .mahjong: deskScene.preview(.mahjong, at: now)
         case .echo: echo.startDemo(at: now)
         case .petting: affection.previewTouch(character: actor, at: now)
@@ -196,7 +211,7 @@ final class PetView: NSView {
         let wasPerforming = deskScene.frame(at: now) != nil || previewActor != nil
         let inReach = hypot(cursor.x - eyes.x, cursor.y - eyes.y) < 95
         deskScene.update(character: actor, cursorNear: inReach,
-                         canStartIdle: !reduced && !affection.isActive && !echo.isPlaying, at: now)
+                         canStartIdle: !reduced && !affection.isActive && !echo.isPlaying && now - wheel.lastInput >= 0.43, at: now)
         if deskScene.frame(at: now) != nil {
             echo.cancel()
             if affection.isActive { affection.reset() }
@@ -297,14 +312,18 @@ final class PetView: NSView {
         let clicking = (0...0.16).contains(clickAge)
         let recentlyClicked = (0...0.42).contains(clickAge)
         let holding = NSEvent.pressedMouseButtons & 0b11 != 0
-        let lastMouseAction = recentlyClicked ? max(lastMouseMovement, now - clickAge) : lastMouseMovement
+        let rolling = now - wheel.lastInput < 0.43 && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if rolling { needsDisplay = true }
+        let lastPointerAction = recentlyClicked ? max(lastMouseMovement, now - clickAge) : lastMouseMovement
+        let lastMouseAction = max(lastPointerAction, rolling ? wheel.lastInput : -.infinity)
         // A front-facing pet's right paw is on the left side of the drawing.
         let mousePawKeyAge = now - lastLeftPress
         let typingWithMousePaw = mousePawKeyAge < 0.11 || (mousePawKeyAge < 0.22 && lastLeftPress > lastMouseAction)
         let usingMouse = !moving && !typingWithMousePaw && (now - lastMouseAction < 0.48 || holding)
         if !usingMouse { mouseTarget = .zero }
 
-        let reach = approach(mouseReach, toward: usingMouse ? 1 : 0, fraction: usingMouse ? 0.42 : 0.28)
+        let reachSpeed: CGFloat = rolling ? 0.73 : 0.42
+        let reach = approach(mouseReach, toward: usingMouse ? 1 : 0, fraction: usingMouse ? reachSpeed : 0.28)
         let click = approach(mousePress, toward: usingMouse && (clicking || holding) ? 1 : 0, fraction: 0.6)
         let offset = CGVector(
             dx: approach(mouseOffset.dx, toward: mouseTarget.dx, fraction: 0.44),
@@ -342,7 +361,7 @@ final class PetView: NSView {
             rightKey: rightKey,
             mouseReach: mouseReach,
             mouseOffset: mouseOffset,
-            mousePress: mousePress,
+            mousePress: mousePress, wheel: reducedMotion ? .init() : wheel.pose(at: now),
             character: actor, scene: deskScene.frame(at: now), affection: pose, life: breath, typingWeight: weight,
             leftOrigin: leftAge < Self.downstroke ? leftStart : nil,
             rightOrigin: rightAge < Self.downstroke ? rightStart : nil,

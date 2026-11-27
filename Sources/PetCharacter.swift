@@ -1,9 +1,10 @@
 enum PetCharacter: String, CaseIterable {
-    case cat, dog, rabbit, giraffe, raccoon, redPanda, otter
+    case cat, rascal, dog, rabbit, giraffe, raccoon, redPanda, otter
 
     var menuTitle: String {
         switch self {
         case .cat: return "Smudge（墨团）· 小黑猫"
+        case .rascal: return "Rascal（小坏蛋）· 键帽大盗"
         case .dog: return "Pickles（酸黄瓜）· 小狗"
         case .rabbit: return "Pipkin（小陶罐）· 小兔"
         case .giraffe: return "Periscope（潜望镜）· 长颈鹿"

@@ -28,6 +28,7 @@ struct PortraitMotion {
     static func neck(for character: PetCharacter) -> CGFloat {
         switch character {
         case .cat: return 98
+        case .rascal: return 107
         case .dog: return 97
         case .rabbit: return 99
         case .giraffe: return 159
@@ -158,10 +159,12 @@ final class PortraitSkin {
 final class PortraitLimb {
     private let fur: CGImage
     private let palm: CGImage
+    private let gripWrist: CGVector?
     private static let space = CGColorSpace(name: CGColorSpace.sRGB)!
 
-    init?(fur: CGImage, straightPaw: CGImage) {
+    init?(fur: CGImage, straightPaw: CGImage, gripWrist: CGVector? = nil) {
         self.fur = fur
+        self.gripWrist = gripWrist
         let w = straightPaw.width, h = Int(Double(straightPaw.height) * 0.55)
         guard let tip = straightPaw.cropping(to: CGRect(x: 0, y: straightPaw.height - h, width: w, height: h)),
               let c = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
@@ -180,39 +183,67 @@ final class PortraitLimb {
     func draw(in c: CGContext, shoulder: CGPoint, toe: CGPoint, side: CGFloat, grip: CGFloat, gripImage: CGImage?, hoof: Bool) {
         let dx = toe.x - shoulder.x, dy = toe.y - shoulder.y
         let distance = max(1, hypot(dx, dy))
-        let bend = min(17, max(5, 24 - 0.31 * distance))
+        let custom = gripImage != nil ? grip : 0
+        let sideBend = min(17, max(5, 24 - 0.31 * distance))
+        let bend = gripWrist == nil ? sideBend : sideBend * (1 - 0.78 * custom)
         let elbow = CGPoint(x: shoulder.x + dx * 0.45 + side * bend,
                             y: shoulder.y + dy * 0.40 + max(0, -dy - 34) * 0.10)
         let distalDistance = max(1, hypot(elbow.x - toe.x, elbow.y - toe.y))
         let ux = (elbow.x - toe.x) / distalDistance, uy = (elbow.y - toe.y) / distalDistance
-        // A curled hand holds its prop from above, even when the elbow is out to the side.
-        let palmAngle = min(1.16, max(-1.16, atan2(-ux, uy))) * (1 - grip * 0.72)
-        let wrist = CGPoint(x: toe.x - sin(palmAngle) * 12.5, y: toe.y + cos(palmAngle) * 12.5)
-        paintArm(in: c, from: shoulder, elbow: elbow, to: wrist)
+        let armAngle = atan2(-ux, uy)
+        let openAngle = min(1.16, max(-1.16, armAngle))
+        var palmAngle = openAngle * (1 - grip * 0.72)
+        var joint = CGVector(dx: 0, dy: 12.5)
+        if let gripWrist, custom > 0 {
+            // A sideways pinch pivots about the fingers while the fur at the
+            // top of this painted paw stays directly on the forearm.
+            let aligned = min(2.2, max(-2.2, armAngle + atan2(gripWrist.dx, gripWrist.dy)))
+            palmAngle = openAngle + (aligned - openAngle) * custom
+            joint.dx = gripWrist.dx * custom
+            joint.dy += (gripWrist.dy - joint.dy) * custom
+        }
+        let wrist = CGPoint(x: toe.x + joint.dx * cos(palmAngle) - joint.dy * sin(palmAngle),
+                            y: toe.y + joint.dx * sin(palmAngle) + joint.dy * cos(palmAngle))
+        paintArm(in: c, from: shoulder, elbow: elbow, to: wrist, fittedCuff: gripWrist == nil ? 0 : custom)
         c.saveGState()
         c.translateBy(x: toe.x, y: toe.y); c.rotate(by: palmAngle)
         let w: CGFloat = hoof ? 16.0 : 20.0
-        let custom = gripImage != nil ? grip : 0
+        let palmFrame = CGRect(x: -w / 2, y: -1.5, width: w, height: hoof ? 19 : 21)
+        let gripW: CGFloat = 22.5
+        let gripH = gripImage.map { min(29, gripW * CGFloat($0.height) / CGFloat($0.width)) } ?? 0
+        let gripFrame = CGRect(x: -gripW * 0.29, y: -gripH * 0.32, width: gripW, height: gripH)
         let blending = custom > 0 && custom < 1
+        if blending, gripWrist != nil, let gripImage {
+            // The pinching fingers stick out beyond the straight paw. Reveal them
+            // from fingertip to wrist with an opaque edge, keeping one silhouette.
+            let area = palmFrame.union(gripFrame).insetBy(dx: -1, dy: -1)
+            let split = area.minY + area.height * custom
+            c.saveGState()
+            c.clip(to: CGRect(x: area.minX, y: split, width: area.width, height: area.maxY - split))
+            c.draw(palm, in: palmFrame)
+            c.restoreGState()
+            c.clip(to: CGRect(x: area.minX, y: area.minY, width: area.width, height: split - area.minY))
+            c.draw(gripImage, in: gripFrame)
+            c.restoreGState()
+            return
+        }
         // Weight both opaque coats inside their own layer so key legends cannot
         // show through the palm while the fingers close around an object.
         if blending { c.beginTransparencyLayer(auxiliaryInfo: nil) }
         if custom < 1 {
             c.setAlpha(1 - custom)
-            c.draw(palm, in: CGRect(x: -w / 2, y: -1.5, width: w, height: hoof ? 19 : 21))
+            c.draw(palm, in: palmFrame)
         }
         if let gripImage, custom > 0 {
             if blending { c.setBlendMode(.plusLighter) }
             c.setAlpha(custom)
-            let gripW: CGFloat = 22.5
-            let gripH = min(29, gripW * CGFloat(gripImage.height) / CGFloat(gripImage.width))
-            c.draw(gripImage, in: CGRect(x: -gripW * 0.29, y: -gripH * 0.32, width: gripW, height: gripH))
+            c.draw(gripImage, in: gripFrame)
         }
         if blending { c.endTransparencyLayer() }
         c.restoreGState()
     }
 
-    private func paintArm(in c: CGContext, from shoulder: CGPoint, elbow: CGPoint, to wrist: CGPoint) {
+    private func paintArm(in c: CGContext, from shoulder: CGPoint, elbow: CGPoint, to wrist: CGPoint, fittedCuff: CGFloat) {
         let dx = shoulder.x - wrist.x, dy = shoulder.y - wrist.y
         let len = max(1, hypot(dx, dy))
         let angle = atan2(-dx, dy)
@@ -223,11 +254,14 @@ final class PortraitLimb {
         let ex = (elbow.x - wrist.x) * cos(angle) + (elbow.y - wrist.y) * sin(angle)
         let ey = -(elbow.x - wrist.x) * sin(angle) + (elbow.y - wrist.y) * cos(angle)
         let bend = max(-13, min(13, ex)), middle = max(4, min(len - 1, ey))
+        let halfWidth = 6.5 - 2.8 * fittedCuff
+        let cuffY = -5 + 5.5 * fittedCuff
         let contour = CGMutablePath()
-        contour.move(to: CGPoint(x: -6.5, y: -5))
+        contour.move(to: CGPoint(x: -halfWidth, y: cuffY))
         contour.addQuadCurve(to: CGPoint(x: -9.8, y: len + 3), control: CGPoint(x: bend * 1.65 - 9.3, y: middle))
         contour.addQuadCurve(to: CGPoint(x: 9.8, y: len + 3), control: CGPoint(x: 0, y: len + 10))
-        contour.addQuadCurve(to: CGPoint(x: 6.5, y: -5), control: CGPoint(x: bend * 1.65 + 9.3, y: middle))
+        contour.addQuadCurve(to: CGPoint(x: halfWidth, y: cuffY), control: CGPoint(x: bend * 1.65 + 9.3, y: middle))
+        contour.addQuadCurve(to: CGPoint(x: -halfWidth, y: cuffY), control: CGPoint(x: 0, y: cuffY - 4 * fittedCuff))
         contour.closeSubpath()
         c.addPath(contour)
         c.clip()

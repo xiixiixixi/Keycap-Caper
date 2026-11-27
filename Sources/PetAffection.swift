@@ -121,7 +121,7 @@ final class PetAffection {
         let size: CGSize
         let rise: CGFloat
         switch character {
-        case .cat:      (size, rise) = (CGSize(width: 106, height: 52), 33)
+        case .cat, .rascal: (size, rise) = (CGSize(width: 106, height: 52), 33)
         case .rabbit:   (size, rise) = (CGSize(width: 78, height: 33), 22)
         case .giraffe:  (size, rise) = (CGSize(width: 62, height: 41), 17)
         case .dog:      (size, rise) = (CGSize(width: 86, height: 44), 23)
@@ -170,7 +170,7 @@ final class PetAffection {
             pose.tilt = -0.13 * t * movement
             pose.lift = -7 * t * movement
             pose.blink = 0.95 * t
-        case .raccoon, .otter:
+        case .raccoon, .otter, .rascal:
             pose.leftToe = CGPoint(x: 133 + 18 * t, y: 51 + 20 * t)
             pose.rightToe = CGPoint(x: 182 - 13 * t, y: 51 + 20 * t)
             pose.tilt = 0.045 * t * movement
@@ -187,7 +187,7 @@ final class PetAffection {
         guard let c = catching else { return }
         let age = CGFloat(now - c.born)
         guard age >= 0, age < CGFloat(c.duration) else { return }
-        let heldInPaws = age >= 1.03 && (c.pet == .raccoon || c.pet == .otter || c.pet == .redPanda || (c.pet == .cat && !c.isPillow))
+        let heldInPaws = age >= 1.03 && (c.pet == .raccoon || c.pet == .otter || c.pet == .rascal || c.pet == .redPanda || (c.pet == .cat && !c.isPillow))
         if (layer == .beforePaws && !heldInPaws) || (layer == .afterPaws && heldInPaws) { return }
         if age <= 0.50 {
             PetBubbleArt.draw(label: c.label, lane: c.lane, age: TimeInterval(age), in: context)
@@ -212,7 +212,7 @@ final class PetAffection {
         case .cat where c.isPillow:
             stretch += 0.30 * fall
             tilt += 0.17 * fall * motion
-        case .otter, .raccoon:
+        case .otter, .raccoon, .rascal:
             center.y += sin(release * .pi * 2) * 3 * motion
             tilt += sin(release * .pi * 2) * 0.22 * motion
         case .cat, .redPanda:
@@ -231,7 +231,7 @@ final class PetAffection {
         case .rabbit: offset = CGVector(dx: 17, dy: -14)
         case .giraffe: offset = CGVector(dx: 18, dy: -19)
         case .cat where c.isPillow: offset = CGVector(dx: 17, dy: -43)
-        case .otter, .raccoon: return CGPoint(x: 160, y: 72)
+        case .otter, .raccoon, .rascal: return CGPoint(x: 160, y: 72)
         case .cat, .redPanda: return CGPoint(x: 196, y: 72)
         }
         return CatArt.faceSpot(offsetFromEyes: offset, character: c.pet, reach: mouseReach, reaction: pose)

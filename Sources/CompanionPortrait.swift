@@ -4,6 +4,10 @@ import ImageIO
 /// Portrait artwork and animation anchors share a 385-unit, top-down artboard.
 final class CompanionPortrait {
     private static let artSize: CGFloat = 385
+    private static let rascal = CompanionPortrait(
+        asset: "Rascal", character: .rascal, frame: CGRect(x: 69, y: 47, width: 182, height: 182),
+        eyes: [CGRect(x: 91, y: 121, width: 78, height: 54), CGRect(x: 209, y: 139, width: 75, height: 46)],
+        fur: CGRect(x: 125, y: 284, width: 59, height: 60), lidFur: CGRect(x: 151, y: 95, width: 32, height: 28), hoof: false)
     private static let dog = CompanionPortrait(
         asset: "Pickles", character: .dog, frame: CGRect(x: 76, y: 48, width: 168, height: 168),
         eyes: [CGRect(x: 113, y: 124, width: 55, height: 49), CGRect(x: 214, y: 142, width: 53, height: 50)],
@@ -32,6 +36,7 @@ final class CompanionPortrait {
     static func forCharacter(_ character: PetCharacter) -> CompanionPortrait? {
         switch character {
         case .cat: return nil
+        case .rascal: return rascal
         case .dog: return dog
         case .rabbit: return rabbit
         case .giraffe: return giraffe
@@ -57,10 +62,11 @@ final class CompanionPortrait {
         self.grip = Self.loadGrip(for: character)
         let sourceScale = CGFloat(image.width) / Self.artSize
         let toSource = CGAffineTransform(scaleX: sourceScale, y: sourceScale)
+        let gripWrist = character == .rascal ? CGVector(dx: 7, dy: 13) : nil
         guard let furPatch = image.cropping(to: fur.applying(toSource).integral),
               let eyelid = image.cropping(to: lidFur.applying(toSource).integral),
               let paw = Self.paintPaw(fur: furPatch, hoof: hoof),
-              let limb = PortraitLimb(fur: furPatch, straightPaw: paw) else { return nil }
+              let limb = PortraitLimb(fur: furPatch, straightPaw: paw, gripWrist: gripWrist) else { return nil }
         self.limb = limb
         let targetScale = frame.width / Self.artSize
         self.eyes = eyeRects.compactMap { rect in
@@ -71,7 +77,7 @@ final class CompanionPortrait {
                                   y: frame.maxY - crop.maxY * frame.height / CGFloat(image.height),
                                   width: crop.width * frame.width / CGFloat(image.width),
                                   height: crop.height * frame.height / CGFloat(image.height))
-            return PortraitEye(image: detail, eyelid: eyelid, frame: drawRect)
+            return PortraitEye(image: detail, eyelid: eyelid, frame: drawRect, separatePupil: character == .rascal)
         }
         let midpoint = CGPoint(x: (eyeRects[0].midX + eyeRects[1].midX) * 0.5,
                                y: (eyeRects[0].midY + eyeRects[1].midY) * 0.5)
@@ -94,6 +100,7 @@ final class CompanionPortrait {
     private static func loadGrip(for character: PetCharacter) -> CGImage? {
         let asset: String
         switch character {
+        case .rascal: asset = "RascalGrip"
         case .raccoon: asset = "RaccoonGrip"
         case .otter: asset = "OtterGrip"
         default: return nil
@@ -169,13 +176,14 @@ final class CompanionPortrait {
     }
 }
 
-// Move the pixels of each painted eye. This preserves its original iris, highlights,
-// irregular eyelids and surrounding fur throughout motion, with no second pupil.
+// Painted eyes move by warping the original pixels. A clean eye plate can also
+// carry a separate pupil without moving its eyelids or duplicating its iris.
 private final class PortraitEye {
     private let frame: CGRect
     private let width: Int
     private let height: Int
     private let original: [UInt8]
+    private let separatePupil: Bool
     private let lid: [UInt8]
     private let canvas: CGContext
     private let output: UnsafeMutablePointer<UInt8>
@@ -184,8 +192,9 @@ private final class PortraitEye {
     private var lastBlink = Int.min
     private var lastImage: CGImage?
 
-    init?(image: CGImage, eyelid: CGImage, frame: CGRect) {
+    init?(image: CGImage, eyelid: CGImage, frame: CGRect, separatePupil: Bool) {
         self.frame = frame
+        self.separatePupil = separatePupil
         width = max(20, Int(ceil(frame.width * 3)))
         height = max(20, Int(ceil(frame.height * 3)))
         guard let canvas = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -210,7 +219,7 @@ private final class PortraitEye {
         let hx = Int((min(1, max(-1, gaze.dx)) * 24).rounded())
         let vy = Int((min(1, max(-1, gaze.dy)) * 24).rounded())
         let closed = Int((min(1, max(0, blink)) * 24).rounded())
-        if hx == 0 && vy == 0 && closed == 0 { return }
+        if !separatePupil && hx == 0 && vy == 0 && closed == 0 { return }
         if hx != lastX || vy != lastY || closed != lastBlink {
             lastImage = nil
             let rx = Double(width) / 2
@@ -218,6 +227,9 @@ private final class PortraitEye {
             let shiftX = Double(hx) / 24 * rx * 0.32
             let shiftY = -Double(vy) / 24 * ry * 0.21
             let blink = Double(closed) / 24
+            let direction = Double(hx) / 24
+            let pupilX = -0.24 + direction * (direction > 0 ? 0.69 : 0.18)
+            let pupilY = 0.045 - Double(vy) / 24 * 0.22 + pupilX * 0.16
             for y in 0..<height {
                 let v = (Double(y) + 0.5 - ry) / ry
                 for x in 0..<width {
@@ -227,9 +239,11 @@ private final class PortraitEye {
                     // Even solid fur can carry slight transparency in the portrait PNG.
                     guard alpha > 0, original[destination + 3] >= 240 else { continue }
                     let falloff = alpha * alpha
-                    let sx = Double(x) - shiftX * falloff
-                    let sy = Double(y) - shiftY * falloff
-                    sample(x: sx, y: sy, to: destination)
+                    if separatePupil {
+                        paintFeltPupil(at: destination, u: u - pupilX, v: v - pupilY)
+                    } else {
+                        sample(x: Double(x) - shiftX * falloff, y: Double(y) - shiftY * falloff, to: destination)
+                    }
                     if output[destination + 3] < 240 {
                         for channel in 0..<4 { output[destination + channel] = 0 }
                         continue
@@ -241,7 +255,7 @@ private final class PortraitEye {
                         let seam = 0.22 * h - 0.22 * u*u
                         let top = -h + (h + seam) * blink
                         let bottom = h + (seam - h) * blink
-                        let coverage = min(1, max(0, max(top - v, v - bottom) * 28 + 0.5))
+                        let coverage = separatePupil && closed == 24 ? 1 : min(1, max(0, max(top - v, v - bottom) * 28 + 0.5))
                         let feather = min(1, alpha * 5) * coverage
                         let crease = max(0, 1 - abs(v - top) * 10) * max(0, 1 - u*u)
                         let shade = 1 - 0.09 * h - 0.42 * crease
@@ -263,6 +277,26 @@ private final class PortraitEye {
             c.setBlendMode(.sourceAtop)
             c.draw(lastImage, in: frame)
             c.restoreGState()
+        }
+    }
+
+    // Rascal's lime eye sockets are unpainted. Their actual wool colour masks the
+    // moving pupil so both slanted eyelids occlude it even at the ends of a glance.
+    private func paintFeltPupil(at i: Int, u: Double, v: Double) {
+        for k in 0..<4 { output[i + k] = original[i + k] }
+        let green = Double(original[i + 1])
+        let socket = min(1, max(0, (green - Double(original[i + 2]) - 10) / 28))
+        let x = u / 0.32, y = v / 0.62
+        let coverage = min(1, max(0, (1 - x*x - y*y) * Double(width) * 0.14)) * socket
+        guard coverage > 0 else { return }
+        let hx = (x + 0.12) / 0.23, hy = (y + 0.27) / 0.19
+        let glint = min(1, max(0, (1 - hx*hx - hy*hy) * 2.5))
+        for k in 0..<3 {
+            let fibre = Double(lid[i + k]) * 0.40 + green * 0.015
+            let highlight = 248.0 - Double(k) * 13
+            let colour = fibre + (highlight - fibre) * glint
+            let base = Double(original[i + k])
+            output[i + k] = UInt8(base + (colour - base) * coverage)
         }
     }
 

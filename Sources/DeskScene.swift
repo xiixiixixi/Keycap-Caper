@@ -4,7 +4,7 @@ import ImageIO
 
 /// The desk props use view coordinates, so hands, loose caps and switches share an anchor.
 final class DeskScene {
-    enum Kind { case theft, fishing, mahjong }
+    enum Kind { case theft, fishing, mahjong, stash, yarn }
 
     struct Frame {
         let kind: Kind
@@ -16,6 +16,8 @@ final class DeskScene {
         var lean: CGFloat = 0
         var bodyLift: CGFloat = 0
         var headTilt: CGFloat = 0
+        var stash: KeycapStash.Pose?
+        var yarn: RollingYarn.Pose?
         fileprivate var capCenter: CGPoint?
         fileprivate var lift: CGFloat = 0
         fileprivate var capAngle: CGFloat = 0
@@ -29,6 +31,11 @@ final class DeskScene {
 
         func draw(in context: CGContext) {
             DeskSceneArt.draw(self, in: context)
+        }
+
+        func drawForeground(in context: CGContext) {
+            guard let stash else { return }
+            DeskSceneArt.drawPouchFront(stash, in: context)
         }
     }
 
@@ -60,10 +67,13 @@ final class DeskScene {
     private enum Action {
         case theft(start: TimeInterval, caughtAt: TimeInterval?)
         case fishing(Fishing)
+        case stash(KeycapStash)
+        case yarn(RollingYarn)
         case mahjong(start: TimeInterval)
     }
 
     private var action: Action?
+    private var savedStashDepth: CGFloat = 0.5
     private var lastKey: TimeInterval?
     private var theftArmed = false
     private var nextTheft: TimeInterval = 0
@@ -76,6 +86,7 @@ final class DeskScene {
 
     func reset() {
         action = nil
+        savedStashDepth = 0.5
         lastKey = nil
         theftArmed = false
         typedCount = 0
@@ -98,9 +109,33 @@ final class DeskScene {
         }
     }
 
-    /// A positive distance scrolls down the page and pays out fishing line.
+    /// A positive distance scrolls down the page.
     func scroll(down distance: CGFloat, character: PetCharacter, at now: TimeInterval) {
-        guard character == .otter, distance.isFinite, abs(distance) > 0.01 else { return }
+        guard distance.isFinite, abs(distance) > 0.01 else { return }
+        if character == .rascal {
+            var stash: KeycapStash
+            switch action {
+            case .stash(let current): stash = current
+            case .theft, nil: stash = KeycapStash(at: now, depth: savedStashDepth)
+            default: return
+            }
+            stash.scroll(down: distance, at: now)
+            savedStashDepth = stash.target
+            action = .stash(stash)
+            return
+        }
+        if character == .cat {
+            var yarn: RollingYarn
+            if case .yarn(let current) = action {
+                yarn = current
+            } else if action == nil {
+                yarn = RollingYarn(at: now)
+            } else { return }
+            yarn.scroll(down: distance, at: now)
+            action = .yarn(yarn)
+            return
+        }
+        guard character == .otter else { return }
         let delta = min(120, max(-120, distance))
         if case .fishing(var fish) = action {
             guard fish.caughtAt == nil else { return }
@@ -131,6 +166,8 @@ final class DeskScene {
     func preview(_ kind: Kind, at now: TimeInterval) {
         reset()
         switch kind {
+        case .stash: action = .stash(KeycapStash(at: now, depth: 0, demo: true))
+        case .yarn: action = .yarn(RollingYarn(at: now, demo: true))
         case .theft: action = .theft(start: now, caughtAt: nil)
         case .fishing: action = .fishing(Fishing(born: now, lastScroll: now, demo: true))
         case .mahjong: action = .mahjong(start: now)
@@ -139,6 +176,10 @@ final class DeskScene {
 
     func update(character: PetCharacter, cursorNear: Bool, canStartIdle: Bool, at now: TimeInterval) {
         switch action {
+        case .stash(let stash):
+            if stash.isFinished(at: now) { action = nil }
+        case .yarn(let yarn):
+            if yarn.isFinished(at: now) { action = nil }
         case let .theft(start, caught):
             if !cursorNear { sawDistantCursor = true }
             let age = now - start
@@ -169,7 +210,7 @@ final class DeskScene {
         case .mahjong(let start):
             if now - start >= 2.3 { action = nil }
         case nil:
-            if character == .raccoon && canStartIdle && !cursorNear && theftArmed,
+            if (character == .raccoon || character == .rascal) && canStartIdle && !cursorNear && theftArmed,
                let lastKey, now - lastKey >= 15 && now >= nextTheft {
                 theftArmed = false
                 nextTheft = now + 80
@@ -182,6 +223,8 @@ final class DeskScene {
     func frame(at now: TimeInterval) -> Frame? {
         switch action {
         case nil: return nil
+        case .stash(let stash): return stash.frame(at: now)
+        case .yarn(let yarn): return yarn.frame(at: now)
         case .theft(let start, let caught):
             return theftFrame(age: (caught ?? now) - start, caughtAge: caught.map { now - $0 })
         case .fishing(var fish):
@@ -323,6 +366,7 @@ private enum DeskSceneArt {
     private static let teal = NSColor(srgbRed: 0.28, green: 0.59, blue: 0.56, alpha: 1).cgColor
 
     private static let esc = image("DeskEsc")
+    private static let pouch = image("StashPouch")
     private static let bobber = image("DeskBobber")
     private static let slipper = image("DeskSlipper")
     private static let tile = image("DeskTile")
@@ -341,6 +385,8 @@ private enum DeskSceneArt {
         c.interpolationQuality = .high
         c.setAlpha(f.fade)
         switch f.kind {
+        case .stash: f.stash?.drawBack(in: c, bag: pouch, cap: esc)
+        case .yarn: f.yarn?.draw(in: c)
         case .theft:
             guard let cap = f.capCenter else { return }
             if let esc {
@@ -356,6 +402,10 @@ private enum DeskSceneArt {
         case .fishing: fishing(f, in: c)
         case .mahjong: tiles(f.phase, in: c)
         }
+    }
+
+    static func drawPouchFront(_ pose: KeycapStash.Pose, in c: CGContext) {
+        pose.drawFront(in: c, bag: pouch)
     }
 
     private static let cane = NSColor(srgbRed: 0.62, green: 0.38, blue: 0.20, alpha: 1).cgColor
