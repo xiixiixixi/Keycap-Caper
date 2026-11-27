@@ -1,11 +1,12 @@
 import AppKit
 
 enum PetPlay: String, CaseIterable {
-    case theft, echo, fishing, stash, yarn, petting, bubble, mahjong
+    case theft, rascalTheft, echo, fishing, stash, yarn, petting, bubble, mahjong
 
     var title: String {
         switch self {
         case .theft: return "小浣熊偷键帽"
+        case .rascalTheft: return "小坏蛋偷大键帽"
         case .echo: return "学我的节奏"
         case .fishing: return "水獭滚轮钓鱼"
         case .stash: return "坏猫藏键帽"
@@ -183,6 +184,9 @@ final class PetView: NSView {
         case .theft:
             previewActor = .raccoon
             deskScene.preview(.theft, at: now)
+        case .rascalTheft:
+            previewActor = .rascal
+            deskScene.preview(.theft, character: .rascal, at: now)
         case .fishing:
             previewActor = .otter
             deskScene.preview(.fishing, at: now)

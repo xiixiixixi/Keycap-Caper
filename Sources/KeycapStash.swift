@@ -4,7 +4,11 @@ import Carbon
 /// A continuous path from the cat's chest to the inside of a brass-framed purse.
 /// Wheel events set a position. The paws, eyes and key all follow that same position.
 struct KeycapStash {
+    // The orange key fills the space under the grin, leaving both eyes and the fang visible.
+    static let held = RascalKeycap(center: CGPoint(x: 157.5, y: 97), width: 68, angle: -0.22)
+
     private let born: TimeInterval
+    private let continuing: DeskScene.Frame?
     private var entrance: TimeInterval
     private var entranceAlpha: CGFloat = 0
     private var lastWheel: TimeInterval
@@ -13,7 +17,8 @@ struct KeycapStash {
     private var direction: CGFloat = 0
     private var demo: Bool
 
-    init(at now: TimeInterval, depth: CGFloat, demo: Bool = false) {
+    init(at now: TimeInterval, depth: CGFloat, demo: Bool = false, continuing: DeskScene.Frame? = nil) {
+        self.continuing = continuing
         born = now
         entrance = now - 0.035
         lastWheel = now
@@ -74,20 +79,29 @@ struct KeycapStash {
         let bag = CGRect(x: 225 - bagWidth * 0.5, y: 24.5,
                          width: bagWidth, height: 30.75 - squash)
         let pocket = CGPoint(x: bag.midX, y: bag.minY + bag.height * 0.42)
-        let cap = CGPoint(x: 179 + (pocket.x - 179) * travel,
-                          y: 72 + 2.1 * sin(.pi * travel) - 7.4 * travel - (64.6 - pocket.y) * dip)
-        let angle = -0.27 + 0.38 * travel - 0.37 * dip
-        let pose = Pose(bag: bag, capCenter: cap, capAngle: angle, capWidth: 22 - 3.1 * travel, alpha: visible)
+        let held = Self.held
+        // As the purse appears or clears, lift/lower the cap with the paws so
+        // it never fades in at the muzzle while the hands are on the keyboard.
+        let fromKeyboard = (1 - visible) * (1 - travel)
+        let center = CGPoint(x: held.center.x + (pocket.x - held.center.x) * travel,
+                             y: held.center.y + (64.6 - held.center.y) * travel - 35 * fromKeyboard
+                                + 4.2 * sin(.pi * travel) - (64.6 - pocket.y) * dip)
+        let width = held.width + (18 - held.width) * travel
+        let cap = RascalKeycap(center: center, width: width - (width - 15) * fromKeyboard,
+                               angle: held.angle + 0.29 * travel - 0.32 * dip)
         var frame = DeskScene.Frame(kind: .stash)
-        frame.stash = pose
+        frame.stash = Pose(bag: bag, alpha: visible)
+        frame.rascalCap = cap
+        frame.capOpacity = visible
         if visible > 0.26 { frame.hiddenKey = kVK_Escape }
-        let left = CGPoint(x: 168 - 28 * travel, y: 69 - 17 * travel)
-        let right = CGPoint(x: cap.x + 7 - 4.5 * dip,
-                            y: cap.y + 3.8 + 11 * Self.smooth((depth - 0.79) / 0.21) - 2.4 * stroke * dip)
-        frame.leftToe = CGPoint(x: 133 + (left.x - 133) * visible, y: 51 + (left.y - 51) * visible)
-        frame.rightToe = CGPoint(x: 182 + (right.x - 182) * visible, y: 51 + (right.y - 51) * visible)
-        // The curled toes rest against the purse lip when the cap is hidden.
-        // Opening the hand before it withdraws would put a second silhouette outside the purse.
+        // Her second paw lets go before the key reaches the far side of the desk.
+        let support = 1 - Self.smooth(depth / 0.55)
+        let left = Self.mix(CGPoint(x: 139, y: 52), cap.leftContact, support)
+        let lip = CGPoint(x: pocket.x + 2, y: pocket.y + 15 - 2.4 * stroke)
+        let right = Self.mix(cap.rightContact, lip, Self.smooth((depth - 0.73) / 0.27))
+        frame.leftToe = Self.mix(CGPoint(x: 133, y: 51), left, visible)
+        frame.rightToe = Self.mix(CGPoint(x: 182, y: 51), right, visible)
+        frame.leftGrip = support * visible
         frame.grip = visible
         frame.lean = (-1.6 + 7.2 * travel) * visible
         frame.bodyLift = (1.8 - 3.8 * dip - stroke * 0.85) * visible
@@ -95,14 +109,34 @@ struct KeycapStash {
         // At either end she peeks sideways once her paws have settled.
         let peek = Self.smooth((now - (demo ? born + 2.9 : lastWheel) - 0.33) / 0.47) * (1 - travel)
         frame.gaze = CGVector(dx: 0.24 + 0.65 * travel - 1.13 * peek, dy: -0.74 + 0.76 * peek)
+        // Scrolling can interrupt a theft during the pry, lift, or return. Carry
+        // those exact contacts into the purse gesture before taking up its path.
+        if let previous = continuing, now - born < 0.28 {
+            let amount = Self.smooth((now - born) / 0.28)
+            frame.leftToe = Self.mix(previous.leftToe ?? CGPoint(x: 133, y: 51), left, amount)
+            frame.rightToe = Self.mix(previous.rightToe ?? CGPoint(x: 182, y: 51), right, amount)
+            frame.leftGrip += (previous.leftGrip - frame.leftGrip) * (1 - amount)
+            frame.grip += (previous.grip - frame.grip) * (1 - amount)
+            frame.lean += (previous.lean - frame.lean) * (1 - amount)
+            frame.bodyLift += (previous.bodyLift - frame.bodyLift) * (1 - amount)
+            frame.headTilt += (previous.headTilt - frame.headTilt) * (1 - amount)
+            if let old = previous.rascalCap {
+                frame.rascalCap = RascalKeycap(center: Self.mix(old.center, center, amount),
+                    width: old.width + (cap.width - old.width) * amount,
+                    angle: old.angle + (cap.angle - old.angle) * amount)
+                frame.capOpacity = 1
+                frame.hiddenKey = kVK_Escape
+            }
+        }
         return frame
+    }
+
+    private static func mix(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
+        CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
     }
 
     struct Pose {
         let bag: CGRect
-        let capCenter: CGPoint
-        let capAngle: CGFloat
-        let capWidth: CGFloat
         let alpha: CGFloat
 
         // Trace the inner edge of the front brass rim in the purse's original proportions.
@@ -123,7 +157,7 @@ struct KeycapStash {
             return path
         }
 
-        func drawBack(in c: CGContext, bag image: CGImage?, cap: CGImage?) {
+        func drawBack(in c: CGContext, bag image: CGImage?) {
             guard alpha > 0 else { return }
             c.saveGState()
             defer { c.restoreGState() }
@@ -137,13 +171,6 @@ struct KeycapStash {
                 c.clip(using: .evenOdd)
                 c.draw(image, in: bag)
                 c.restoreGState()
-            }
-            if let cap {
-                c.translateBy(x: capCenter.x, y: capCenter.y)
-                c.rotate(by: capAngle)
-                c.draw(cap, in: CGRect(x: -0.5 * capWidth, y: -0.42 * capWidth, width: capWidth, height: 0.85 * capWidth))
-            } else {
-                PetKeyboard.drawLooseCap(kVK_Escape, center: capCenter, scale: 1.6, rotation: capAngle, in: c)
             }
         }
 

@@ -157,6 +157,8 @@ final class PortraitSkin {
 /// The palm keeps its original length while two short segments change angle at
 /// the elbow. Both joints use fur sampled from the actual animal portrait.
 final class PortraitLimb {
+    enum Layer { case complete, arm, fingers }
+
     private let fur: CGImage
     private let palm: CGImage
     private let gripWrist: CGVector?
@@ -180,7 +182,7 @@ final class PortraitLimb {
         self.palm = palm
     }
 
-    func draw(in c: CGContext, shoulder: CGPoint, toe: CGPoint, side: CGFloat, grip: CGFloat, gripImage: CGImage?, hoof: Bool) {
+    func draw(in c: CGContext, shoulder: CGPoint, toe: CGPoint, side: CGFloat, grip: CGFloat, gripImage: CGImage?, hoof: Bool, layer: Layer = .complete) {
         let dx = toe.x - shoulder.x, dy = toe.y - shoulder.y
         let distance = max(1, hypot(dx, dy))
         let custom = gripImage != nil ? grip : 0
@@ -204,14 +206,22 @@ final class PortraitLimb {
         }
         let wrist = CGPoint(x: toe.x + joint.dx * cos(palmAngle) - joint.dy * sin(palmAngle),
                             y: toe.y + joint.dx * sin(palmAngle) + joint.dy * cos(palmAngle))
-        paintArm(in: c, from: shoulder, elbow: elbow, to: wrist, fittedCuff: gripWrist == nil ? 0 : custom)
+        if layer != .fingers {
+            paintArm(in: c, from: shoulder, elbow: elbow, to: wrist, fittedCuff: gripWrist == nil ? 0 : custom)
+        }
+        if layer == .arm { return }
         c.saveGState()
         c.translateBy(x: toe.x, y: toe.y); c.rotate(by: palmAngle)
         let w: CGFloat = hoof ? 16.0 : 20.0
         let palmFrame = CGRect(x: -w / 2, y: -1.5, width: w, height: hoof ? 19 : 21)
         let gripW: CGFloat = 22.5
         let gripH = gripImage.map { min(29, gripW * CGFloat($0.height) / CGFloat($0.width)) } ?? 0
-        let gripFrame = CGRect(x: -gripW * 0.29, y: -gripH * 0.32, width: gripW, height: gripH)
+        // As the fingers open, bring the long curled tips back to the straight
+        // paw's toe. Both silhouettes must meet at the partial reveal edge.
+        let curl = layer == .fingers ? custom : 1
+        let gripFrame = CGRect(x: -gripW * (0.35 - 0.06 * curl),
+                               y: -1.2 + (1.2 - gripH * 0.32) * curl,
+                               width: gripW * (0.7 + 0.3 * curl), height: gripH * (0.70 + 0.30 * curl))
         let blending = custom > 0 && custom < 1
         if blending, gripWrist != nil, let gripImage {
             // The pinching fingers stick out beyond the straight paw. Reveal them

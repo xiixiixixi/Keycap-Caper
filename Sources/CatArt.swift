@@ -85,17 +85,26 @@ enum CatArt {
             context.setFillColor(CGColor(gray: 0.08, alpha: 0.045 + contact * 0.06))
             context.fillEllipse(in: CGRect(x: tip.x - 7.2, y: tip.y - 2.5, width: 14.4, height: 3.8))
         }
-        scene?.draw(in: context)
-        underPaws?(context)
         let rightShoulder = rig.map(CGPoint(x: 185, y: 84))
         let leftShoulder = rig.map(CGPoint(x: 127, y: 84))
-        if let portrait {
-            portrait.drawPaw(in: context, toe: right, shoulder: rightShoulder, side: 1, hold: scene?.grip ?? 0)
-            portrait.drawPaw(in: context, toe: movingToe, shoulder: leftShoulder, side: -1, hold: 0)
-        } else {
-            kittenLimb?.draw(in: context, shoulder: rightShoulder, toe: right, side: 1, grip: 0, gripImage: nil, hoof: false)
-            kittenLimb?.draw(in: context, shoulder: leftShoulder, toe: movingToe, side: -1, grip: 0, gripImage: nil, hoof: false)
+        func paws(_ layer: PortraitLimb.Layer) {
+            if let portrait {
+                portrait.drawPaw(in: context, toe: right, shoulder: rightShoulder, side: 1,
+                                 hold: scene?.grip ?? 0, layer: layer)
+                portrait.drawPaw(in: context, toe: movingToe, shoulder: leftShoulder, side: -1,
+                                 hold: scene?.leftGrip ?? 0, layer: layer)
+            } else {
+                kittenLimb?.draw(in: context, shoulder: rightShoulder, toe: right, side: 1, grip: 0, gripImage: nil, hoof: false, layer: layer)
+                kittenLimb?.draw(in: context, shoulder: leftShoulder, toe: movingToe, side: -1, grip: 0, gripImage: nil, hoof: false, layer: layer)
+            }
         }
+        // She wraps her paws around the trophy's sides. The wrists are behind
+        // the cap, with just the curved fingertips visible over its face.
+        let holdingCap = scene?.rascalCap != nil
+        if holdingCap { paws(.arm) }
+        scene?.draw(in: context)
+        underPaws?(context)
+        paws(holdingCap ? .fingers : .complete)
         scene?.drawForeground(in: context)
     }
 

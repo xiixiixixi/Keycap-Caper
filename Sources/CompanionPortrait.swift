@@ -93,8 +93,19 @@ final class CompanionPortrait {
         c.restoreGState()
     }
 
-    func drawPaw(in c: CGContext, toe: CGPoint, shoulder: CGPoint, side: CGFloat, hold: CGFloat) {
-        limb.draw(in: c, shoulder: shoulder, toe: toe, side: side, grip: hold, gripImage: grip, hoof: hoof)
+    func drawPaw(in c: CGContext, toe: CGPoint, shoulder: CGPoint, side: CGFloat, hold: CGFloat, layer: PortraitLimb.Layer = .complete) {
+        // The illustrated pinch opens to the left. Reflect the whole joint
+        // chain about the contact point when the opposite paw steadies the cap.
+        if side < 0, hold > 0 {
+            c.saveGState()
+            c.translateBy(x: 2 * toe.x, y: 0)
+            c.scaleBy(x: -1, y: 1)
+            let reflected = CGPoint(x: 2 * toe.x - shoulder.x, y: shoulder.y)
+            limb.draw(in: c, shoulder: reflected, toe: toe, side: 1, grip: hold, gripImage: grip, hoof: hoof, layer: layer)
+            c.restoreGState()
+        } else {
+            limb.draw(in: c, shoulder: shoulder, toe: toe, side: side, grip: hold, gripImage: grip, hoof: hoof, layer: layer)
+        }
     }
 
     private static func loadGrip(for character: PetCharacter) -> CGImage? {

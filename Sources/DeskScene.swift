@@ -13,6 +13,9 @@ final class DeskScene {
         var gaze: CGVector?
         var hiddenKey: Int?
         var grip: CGFloat = 0
+        var leftGrip: CGFloat = 0
+        var rascalCap: RascalKeycap?
+        var capOpacity: CGFloat = 1
         var lean: CGFloat = 0
         var bodyLift: CGFloat = 0
         var headTilt: CGFloat = 0
@@ -65,7 +68,7 @@ final class DeskScene {
     }
 
     private enum Action {
-        case theft(start: TimeInterval, caughtAt: TimeInterval?)
+        case theft(start: TimeInterval, caughtAt: TimeInterval?, character: PetCharacter)
         case fishing(Fishing)
         case stash(KeycapStash)
         case yarn(RollingYarn)
@@ -116,7 +119,10 @@ final class DeskScene {
             var stash: KeycapStash
             switch action {
             case .stash(let current): stash = current
-            case .theft, nil: stash = KeycapStash(at: now, depth: savedStashDepth)
+            case .theft:
+                let pose = frame(at: now)
+                stash = KeycapStash(at: now, depth: pose?.rascalCap == nil ? savedStashDepth : 0, continuing: pose)
+            case nil: stash = KeycapStash(at: now, depth: savedStashDepth)
             default: return
             }
             stash.scroll(down: distance, at: now)
@@ -163,12 +169,12 @@ final class DeskScene {
         }
     }
 
-    func preview(_ kind: Kind, at now: TimeInterval) {
+    func preview(_ kind: Kind, character: PetCharacter = .raccoon, at now: TimeInterval) {
         reset()
         switch kind {
         case .stash: action = .stash(KeycapStash(at: now, depth: 0, demo: true))
         case .yarn: action = .yarn(RollingYarn(at: now, demo: true))
-        case .theft: action = .theft(start: now, caughtAt: nil)
+        case .theft: action = .theft(start: now, caughtAt: nil, character: character)
         case .fishing: action = .fishing(Fishing(born: now, lastScroll: now, demo: true))
         case .mahjong: action = .mahjong(start: now)
         }
@@ -180,7 +186,7 @@ final class DeskScene {
             if stash.isFinished(at: now) { action = nil }
         case .yarn(let yarn):
             if yarn.isFinished(at: now) { action = nil }
-        case let .theft(start, caught):
+        case let .theft(start, caught, thief):
             if !cursorNear { sawDistantCursor = true }
             let age = now - start
             if let caught {
@@ -188,7 +194,7 @@ final class DeskScene {
             } else if age >= 6.1 {
                 action = nil
             } else if (0.7...4.65).contains(age) && cursorNear && sawDistantCursor {
-                action = .theft(start: start, caughtAt: now)
+                action = .theft(start: start, caughtAt: now, character: thief)
             }
         case .fishing(var fish):
             let age = now - fish.born
@@ -215,7 +221,7 @@ final class DeskScene {
                 theftArmed = false
                 nextTheft = now + 80
                 sawDistantCursor = true  // Natural scenes always start outside the catch radius.
-                action = .theft(start: now, caughtAt: nil)
+                action = .theft(start: now, caughtAt: nil, character: character)
             }
         }
     }
@@ -225,8 +231,8 @@ final class DeskScene {
         case nil: return nil
         case .stash(let stash): return stash.frame(at: now)
         case .yarn(let yarn): return yarn.frame(at: now)
-        case .theft(let start, let caught):
-            return theftFrame(age: (caught ?? now) - start, caughtAge: caught.map { now - $0 })
+        case .theft(let start, let caught, let thief):
+            return theftFrame(age: (caught ?? now) - start, caughtAge: caught.map { now - $0 }, character: thief)
         case .fishing(var fish):
             let age = max(0, now - fish.born)
             fish.integrate(at: now)
@@ -273,7 +279,7 @@ final class DeskScene {
     private static let rest = CGPoint(x: 182, y: 51)
     private static var socket: CGPoint { PetKeyboard.center(for: kVK_Escape)! }
 
-    private func theftFrame(age: TimeInterval, caughtAge: TimeInterval?) -> Frame {
+    private func theftFrame(age: TimeInterval, caughtAge: TimeInterval?, character: PetCharacter) -> Frame {
         let socket = Self.socket
         let rest = Self.rest
         var f = Frame(kind: .theft)
@@ -339,6 +345,24 @@ final class DeskScene {
             let target = lift > 0.002 ? CGPoint(x: socket.x, y: socket.y + 2.5) : rest
             f.rightToe = mix(mix(tuckedToe, target, replaced), rest, release)
         }
+        if character == .rascal, let loose = f.capCenter {
+            // At the keyboard the stolen key matches its socket. At her muzzle both
+            // paws close around the edges of the same orange cap used by the purse.
+            let held = KeycapStash.held
+            let raised = f.lift
+            let center = CGPoint(x: loose.x + (held.center.x - pocket.x) * raised,
+                                 y: loose.y + (held.center.y - pocket.y) * raised)
+            let cap = RascalKeycap(center: center, width: 10 + (held.width - 10) * raised,
+                                   angle: f.capAngle + (held.angle + 0.36) * raised)
+            f.rascalCap = cap
+            f.rightToe = mix(f.rightToe ?? rest, cap.rightContact, ease(raised / 0.29))
+            f.leftGrip = ease((raised - 0.18) / 0.68) * f.grip
+            f.leftToe = mix(f.leftToe ?? leftRest, cap.leftContact, f.leftGrip)
+            if caughtAge == nil {
+                let peek = ease((age - 2.48) / 0.5) * raised
+                f.gaze = CGVector(dx: 0.53 - 1.42 * peek, dy: -0.75 + 0.96 * peek)
+            }
+        }
         return f
     }
 }
@@ -385,10 +409,10 @@ private enum DeskSceneArt {
         c.interpolationQuality = .high
         c.setAlpha(f.fade)
         switch f.kind {
-        case .stash: f.stash?.drawBack(in: c, bag: pouch, cap: esc)
+        case .stash: f.stash?.drawBack(in: c, bag: pouch)
         case .yarn: f.yarn?.draw(in: c)
         case .theft:
-            guard let cap = f.capCenter else { return }
+            guard f.rascalCap == nil, let cap = f.capCenter else { break }
             if let esc {
                 c.translateBy(x: cap.x, y: cap.y)
                 c.rotate(by: f.capAngle)
@@ -401,6 +425,10 @@ private enum DeskSceneArt {
             }
         case .fishing: fishing(f, in: c)
         case .mahjong: tiles(f.phase, in: c)
+        }
+        if let cap = f.rascalCap {
+            c.setAlpha(f.capOpacity)
+            cap.draw(in: c)
         }
     }
 
